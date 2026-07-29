@@ -108,10 +108,18 @@ export interface ExpectedShape {
   };
 }
 
-/** Numeric keys only: the fixture files carry `$comment` / `$derivation` prose. */
+/**
+ * Numeric keys only. The fixture files carry `$comment` / `$derivation` prose,
+ * and some blocks also carry named totals (`sum`, `sumBeforeRenormalise`) that
+ * document the arithmetic but are not object ids — only keys that look like an
+ * id are returned.
+ */
+const ID_KEY = /^(v_|m_|t_|p_|o_)/;
+
 export function numericEntries(o: Record<string, unknown>): Array<[string, number]> {
   return Object.entries(o).filter(
-    (e): e is [string, number] => !e[0].startsWith('$') && typeof e[1] === 'number',
+    (e): e is [string, number] =>
+      !e[0].startsWith('$') && ID_KEY.test(e[0]) && typeof e[1] === 'number',
   );
 }
 
@@ -120,6 +128,8 @@ export function nullableNumericEntries(
 ): Array<[string, number | null]> {
   return Object.entries(o).filter(
     (e): e is [string, number | null] =>
-      !e[0].startsWith('$') && (typeof e[1] === 'number' || e[1] === null),
+      !e[0].startsWith('$') &&
+      ID_KEY.test(e[0]) &&
+      (typeof e[1] === 'number' || e[1] === null),
   );
 }

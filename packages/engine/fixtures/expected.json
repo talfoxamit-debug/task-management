@@ -380,6 +380,24 @@
       "  score = 12.12573253 * 1.0 * 1.0 * 2.7 / 2.29739671 = 14.2506628"
     ],
     "tolerance": 0.0001,
+    "$toleranceNote": [
+      "Relative tolerance. Every figure below contains an exponential worked out",
+      "on paper, which is good to about six significant figures — the residual",
+      "against the implementation is ~2e-6 relative, and it is hand-arithmetic",
+      "error, not formula disagreement. test/score.test.ts additionally pins each",
+      "score to an exact restatement of the Part 4 formula, so the shape of the",
+      "computation is verified without any hand-computed transcendental at all."
+    ],
+    "$anomalyObservation": [
+      "OBSERVED, not hand-derived: the open-set median is not one of the figures",
+      "Part 6 requires by hand, and it is recorded here only as a finding.",
+      "t_x8_overdue scores ~7.96x the open-set median, so the fixture trips the",
+      "6x anomaly guard. That is a true positive rather than a defect: an overdue",
+      "60-minute admin task carries U=3.0 on a small E, which genuinely should be",
+      "done first and is exactly the shape the guard exists to surface. Clearing",
+      "its deadline_date removes the anomaly."
+    ],
+    "anomalousTasks": ["t_x8_overdue"],
     "byTask": {
       "t_x8_overdue": 22.0916644,
       "t_x9_leadtime": 13.2454317,
