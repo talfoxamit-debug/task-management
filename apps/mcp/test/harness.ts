@@ -42,8 +42,39 @@ export interface TestDb {
   drop: () => Promise<void>;
 }
 
+/**
+ * Fail with an actionable message rather than a raw psql error. These tests
+ * deliberately do NOT skip when the server is absent: a silently skipped
+ * integration suite reads as a passing one.
+ */
+function requireServer(): void {
+  try {
+    execFileSync('psql', ['-h', HOST, '-p', String(PORT), '-U', USER, '-d', 'postgres', '-tAc', 'select 1'], {
+      stdio: 'pipe',
+    });
+  } catch (e) {
+    throw new Error(
+      [
+        `No PostgreSQL at ${HOST}:${PORT} (user ${USER}).`,
+        'These are integration tests: the four triggers, the cycle-prevention walk and',
+        "commit_tasks' transaction boundary do not exist in a mock, so they are not skipped.",
+        '',
+        'Start one:',
+        '  export PGDATA=/var/lib/taskos-pg',
+        '  /usr/lib/postgresql/16/bin/initdb -D $PGDATA -U postgres --auth=trust',
+        "  /usr/lib/postgresql/16/bin/pg_ctl -D $PGDATA -o '-p 5433' -l /tmp/pg.log start",
+        '',
+        'Or point elsewhere with TEST_PGHOST / TEST_PGPORT / TEST_PGUSER.',
+        '',
+        `Underlying error: ${e instanceof Error ? e.message.split('\n')[0] : String(e)}`,
+      ].join('\n'),
+    );
+  }
+}
+
 /** A fresh database with every migration applied and the seed loaded. */
 export async function freshDb(label: string): Promise<TestDb> {
+  requireServer();
   const name = `taskos_test_${label}_${process.pid}`;
   execFileSync('psql', ['-h', HOST, '-p', String(PORT), '-U', USER, '-d', 'postgres', '-q', '-c',
     `drop database if exists ${name}`], { stdio: 'pipe' });

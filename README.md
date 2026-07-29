@@ -1,0 +1,201 @@
+# TaskOS V1
+
+A personal task and attention operating system for Tal (Fox Solutions LLC).
+
+V1 answers exactly one question: **given my real milestones and my real hours,
+what is going to slip?**
+
+You reach it by talking to Claude through an MCP connector. There is no LLM in
+this code and no Anthropic API key anywhere in it.
+
+```
+packages/engine     pure functions, zero I/O — slack, coverage, demand, capacity, score
+apps/mcp            the MCP server: 9 tools over streamable HTTP on Vercel
+supabase/migrations schema, four triggers, seed data
+```
+
+## The two rules that override everything else
+
+1. **`packages/engine` is pure.** No database calls, no fetch, no `Date.now()`.
+   Every function takes `today: string` as an explicit argument. This is what
+   makes a portfolio a value, a computation reproducible, and the property tests
+   possible. Don't break it for convenience.
+2. **`fixtures/expected.json` was written by hand** from the spec math, before
+   the functions it judges existed. Regenerating it from the code would leave
+   the tests confirming only that the code does what the code does.
+
+## Running the tests
+
+```bash
+npm install
+npm test                 # 366 tests: engine (256) + mcp (110)
+npm run typecheck
+```
+
+The MCP tests need a local PostgreSQL 16, because the four triggers, the
+cycle-prevention walk and the transaction boundary in `commit_tasks` are the
+things most likely to be wrong and none of them exist in a mock:
+
+```bash
+export PGDATA=/var/lib/taskos-pg
+/usr/lib/postgresql/16/bin/initdb -D $PGDATA -U postgres --auth=trust
+/usr/lib/postgresql/16/bin/pg_ctl -D $PGDATA -o '-p 5433' -l /tmp/pg.log start
+
+# prove the triggers directly
+psql -h localhost -p 5433 -U postgres -d postgres -c 'create database trig'
+for f in supabase/migrations/000*.sql; do psql -h localhost -p 5433 -U postgres -d trig -q -f $f; done
+psql -h localhost -p 5433 -U postgres -d trig -f supabase/tests/triggers.sql
+```
+
+Override the target server with `TEST_PGHOST`, `TEST_PGPORT`, `TEST_PGUSER`.
+
+## Deploying (step 9)
+
+### 1. Database
+
+Any PostgreSQL 15+ works; Supabase is what this was built for. Apply the
+migrations **in order**:
+
+```bash
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f supabase/migrations/0001_schema.sql
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f supabase/migrations/0002_triggers.sql
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f supabase/migrations/0003_seed.sql
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f supabase/migrations/0004_unsorted_venture.sql
+```
+
+Then confirm the cycle trigger is live on the real database before trusting
+anything else — it is the one guard that cannot be checked from the outside:
+
+```bash
+psql "$DATABASE_URL" -f supabase/tests/triggers.sql   # ends: ALL TRIGGER TESTS PASSED
+```
+
+`0003_seed.sql` and `0004` are idempotent, so re-running them is safe.
+
+### 2. Environment
+
+| variable | what it is |
+|---|---|
+| `TASKOS_TOKEN` | Bearer token the connector sends. Generate with `openssl rand -hex 32`. |
+| `DATABASE_URL` | Postgres connection string. On Supabase use the **transaction pooler** (port 6543) — serverless functions open a connection per invocation. |
+
+The server **fails closed**: if `TASKOS_TOKEN` is unset, every request is
+rejected with a 500. An unset secret never means "allow everyone".
+
+### 3. Vercel
+
+```bash
+cd apps/mcp
+vercel link
+vercel env add TASKOS_TOKEN production
+vercel env add DATABASE_URL production
+vercel deploy --prod
+```
+
+The endpoint is `POST https://<deployment>/api/mcp`, streamable HTTP, stateless.
+`GET` and `DELETE` return 405 — there are no sessions to resume, because a
+session id pointing at a dead lambda is worse than no session at all.
+
+### 4. Register the connector
+
+In claude.ai → Settings → Connectors → Add custom connector:
+
+- URL: `https://<deployment>/api/mcp`
+- Authentication: Bearer token, the value of `TASKOS_TOKEN`
+
+This step is done in your account and cannot be scripted from here.
+
+### 5. Verify `capacity()` end to end
+
+Locally, against the deployed database:
+
+```bash
+TASKOS_TOKEN=... DATABASE_URL=... npm run dev -w @taskos/mcp
+```
+
+Or straight at the deployment — a bare `tools/list`, which must be refused
+without a token and must list nine tools with one:
+
+```bash
+curl -sS -X POST https://<deployment>/api/mcp \
+  -H 'content-type: application/json' \
+  -H 'accept: application/json, text/event-stream' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
+# expect 401
+
+curl -sS -X POST https://<deployment>/api/mcp \
+  -H "authorization: Bearer $TASKOS_TOKEN" \
+  -H 'content-type: application/json' \
+  -H 'accept: application/json, text/event-stream' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"curl","version":"1"}}}'
+```
+
+Then, through Claude: *"I have about 25 hours this week — what's going to slip?"*
+
+## The tools
+
+| tool | what it does |
+|---|---|
+| `capture(text)` | Raw text to the inbox, no parsing. One item per line. |
+| `process_inbox()` | Proposes venture, project, criticality, context, estimate, value. Writes nothing. |
+| `commit_tasks(tasks[])` | Writes confirmed tasks plus dependency edges by title, in one transaction. |
+| `set_milestone(...)` | An event **you** control. Drives demand. |
+| `set_outcome_target(...)` | A result **someone else** decides. Drives no demand, ever. |
+| `capacity(available_hours)` | **The main tool.** What is going to slip. |
+| `venture_status(slug)` | One venture: milestones with slack and coverage, blockers, indicators, top 5. |
+| `list_tasks(filter)` | Filtered list, max 15 with a true total. |
+| `close(task_id, ...)` | Marks done. Records actual time per D6. |
+
+Every response carries a `confidence` object: `{ calibrated, balancingActive,
+coverageByMilestone, notes }`. Read the notes before treating a number as
+settled — the system states its own uncertainty rather than presenting guesses
+as facts.
+
+## Things worth knowing before you change anything
+
+**`pressure` appears in `computeDemand` and nowhere else.** Task-level urgency
+must not also multiply by deadline proximity. The same signal applied twice,
+multiplicatively, pushes one task to ~16x normal and erases four ventures from
+the output.
+
+**Coverage below 60% disables slack for that milestone.** An incomplete
+dependency graph produces confidently wrong slack, which is the worst failure
+mode in the design — a milestone with three of its ten blockers wired up reports
+comfortable slack right until it misses. Below the threshold, demand falls back
+to a slack-free formula *and* pressure is held at 1.0, so untrustworthy slack
+cannot reach demand by either route.
+
+**`CHAIN_HOURS_PER_DAY = 6`.** The slack walk subtracts a chain length in *days*
+from a due date while tasks carry estimates in *minutes*, so exactly one
+conversion constant is unavoidable. Six hours is a full day of real output for
+one person running five ventures, not an eight-hour fiction. It is exported and
+named so every slack figure can be re-derived by hand.
+
+**Shares clamp once, then renormalise once.** That is spec-literal, and it means
+renormalising after a floor-raise can push a venture back *under* its floor. The
+engine reports that in `confidence.notes` rather than iterating to a fixed point.
+`fixtures/expected.json` asserts it happens to seatop and foxsolutions.
+
+**The `unsorted` venture is deliberately inactive.** `capture()` cannot know a
+venture and `tasks.venture_id` is `NOT NULL`, so inbox items park against a
+holding venture. `computeDemand` skips inactive ventures, which is what stops the
+inbox from taking a share of your week.
+
+**Recurring work is overhead, not demand (D5).** It is subtracted from available
+hours before the buffer, never added to what a milestone requires, and it never
+appears on a critical path. Missed recurrences do not accumulate.
+
+## What V1 deliberately does not have
+
+No Telegram bot, no cron, no scheduling, no Google Calendar (available hours are
+an argument), no day packing, no delegation pages, no Asana sync, no verification
+integrations, no web UI. V1 had to be usable the night it was built.
+
+Two consequences worth naming rather than hiding:
+
+- **Milestone expiry is called, not scheduled.** `capacity()` runs
+  `taskos_expire_milestones()` at the top of every call, so a past-due milestone
+  cannot keep drawing demand from a date that has gone. There is no cron.
+- **Outcome indicators count events, nothing more.** With no verification
+  integrations, an indicator with no recorded events reports `null` — "nothing
+  has been recorded" — never `0`, which would read as evidence of zero activity.
