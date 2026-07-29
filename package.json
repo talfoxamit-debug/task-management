@@ -1,0 +1,19 @@
+{
+  "name": "taskos",
+  "private": true,
+  "version": "1.0.0",
+  "description": "TaskOS V1 — what is going to slip, given real milestones and real hours",
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "test": "npm run test --workspaces --if-present",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "build": "npm run build --workspaces --if-present",
+    "db:test": "psql -v ON_ERROR_STOP=1 -f supabase/tests/triggers.sql"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.3"
+  }
+}
