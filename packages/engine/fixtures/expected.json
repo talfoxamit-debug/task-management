@@ -1,0 +1,446 @@
+{
+  "$comment": [
+    "HAND-COMPUTED from the Part 4 math against fixtures/portfolio.json.",
+    "Written BEFORE computeSlack / computeCoverage / computeDemand / capacityCheck",
+    "existed, per PART 1 rule 2. Nothing in this file was produced by running the",
+    "engine; if the engine disagrees with a number here, the engine is on trial.",
+    "",
+    "Derivation of every figure is recorded in the sibling `$derivation` keys and",
+    "in fixtures/DERIVATION.md, so any value can be re-checked without running code.",
+    "",
+    "Scope note: Part 6 requires slack per task, demand share per venture, and the",
+    "capacity verdict to be hand-computed. Those are all here, to full precision.",
+    "The `scores` section hand-computes five illustrative tasks that isolate each",
+    "urgency and leverage branch; it deliberately does not hand-compute all 28",
+    "open-set scores, and the median-anomaly rule is verified separately in",
+    "test/score.test.ts against small hand-built inputs."
+  ],
+
+  "today": "2026-07-29",
+  "activeTz": "America/New_York",
+  "taskCount": 39,
+
+  "constants": {
+    "CHAIN_HOURS_PER_DAY": 6,
+    "$derivation": "duration(task) = max(1, ceil(estimate_minutes / 360)) days",
+    "durationDays": {
+      "t_yh1": 4, "t_yh2": 3, "t_yh3": 4, "t_yh4": 2, "t_yh5": 3, "t_yh6": 1, "t_yh7": 2,
+      "t_yh8": 1, "t_yh9": 2,
+      "t_sw1": 2, "t_sw2": 2, "t_sw3": 1, "t_sw4": 2, "t_sw5": 1, "t_sw6": 2,
+      "t_st1": 2, "t_st2": 1, "t_st3": 1,
+      "t_fox1": 2, "t_fox2": 2, "t_fox3": 1,
+      "t_oc1": 1, "t_oc2": 1,
+      "t_x12_leverage": 1
+    }
+  },
+
+  "slack": {
+    "$derivation": [
+      "Participation: criticality blocking or enabling, not recurring (D5), not",
+      "done or killed. Every other task is null.",
+      "chain(t) = duration(t) + max(chain(successors within the milestone set)), 0 if none.",
+      "latestStart(t) = milestone.due_date - chain(t) days.",
+      "slack(t) = daysBetween(today, latestStart(t)), today = 2026-07-29.",
+      "A task reachable from more than one milestone takes the MINIMUM slack.",
+      "",
+      "m_yh_live, due 2026-08-10, chain t_yh1->t_yh2->t_yh3->t_yh4->t_yh5 plus the",
+      "legal shortcut t_yh1->t_yh4:",
+      "  chain(t_yh5)=3; chain(t_yh4)=2+3=5; chain(t_yh3)=4+5=9; chain(t_yh2)=3+9=12;",
+      "  chain(t_yh1)=4+max(12,5)=16  (the shortcut does not lengthen the path)",
+      "  t_yh1: 08-10 minus 16d = 07-25 -> daysBetween(07-29, 07-25) = -4",
+      "  t_yh2: 08-10 minus 12d = 07-29 -> 0",
+      "  t_yh3: 08-10 minus  9d = 08-01 -> 3",
+      "  t_yh4: 08-10 minus  5d = 08-05 -> 7",
+      "  t_yh5: 08-10 minus  3d = 08-07 -> 9",
+      "  t_yh6: 08-10 minus  1d = 08-09 -> 11  (sink, no edges)",
+      "  t_yh7: 08-10 minus  2d = 08-08 -> 10  (enabling sink)",
+      "m_yh_import, due 2026-08-31, t_yh8->t_yh9:",
+      "  chain(t_yh9)=2 -> 08-29 -> 31 ; chain(t_yh8)=1+2=3 -> 08-28 -> 30",
+      "m_sw_saleready, due 2026-08-08, only edge t_sw1->t_sw2:",
+      "  chain(t_sw2)=2 -> 08-06 -> 8 ; chain(t_sw1)=2+2=4 -> 08-04 -> 6",
+      "  chain(t_sw3)=1 -> 08-07 -> 9 ; chain(t_sw4)=2 -> 08-06 -> 8",
+      "  chain(t_sw5)=1 -> 08-07 -> 9 ; chain(t_sw6)=2 -> 08-06 -> 8",
+      "  (these values are LOW CONFIDENCE: coverage 0.40, see coverage below)",
+      "m_st_proposal, due 2026-08-12, t_st1->t_st2:",
+      "  chain(t_st2)=1 -> 08-11 -> 13 ; chain(t_st1)=2+1=3 -> 08-09 -> 11",
+      "  chain(t_st3)=1 -> 08-11 -> 13",
+      "m_fox_phase1, due 2026-08-21, t_fox1->t_fox2:",
+      "  chain(t_fox2)=2 -> 08-19 -> 21 ; chain(t_fox1)=2+2=4 -> 08-17 -> 19",
+      "  chain(t_fox3)=1 -> 08-20 -> 22",
+      "m_octo_demo, due 2026-07-27 (ALREADY PAST), t_oc1->t_oc2:",
+      "  chain(t_oc2)=1 -> 07-26 -> -3 ; chain(t_oc1)=1+1=2 -> 07-25 -> -4",
+      "t_x12_leverage is enabling and has edges, but reaches no milestone -> null."
+    ],
+    "byTask": {
+      "t_yh1": -4,
+      "t_yh2": 0,
+      "t_yh3": 3,
+      "t_yh4": 7,
+      "t_yh5": 9,
+      "t_yh6": 11,
+      "t_yh7": 10,
+      "t_yh8": 30,
+      "t_yh9": 31,
+      "t_sw1": 6,
+      "t_sw2": 8,
+      "t_sw3": 9,
+      "t_sw4": 8,
+      "t_sw5": 9,
+      "t_sw6": 8,
+      "t_st1": 11,
+      "t_st2": 13,
+      "t_st3": 13,
+      "t_fox1": 19,
+      "t_fox2": 21,
+      "t_fox3": 22,
+      "t_oc1": -4,
+      "t_oc2": -3,
+      "t_st4": null,
+      "t_r1": null,
+      "t_r2": null,
+      "t_r3": null,
+      "t_x1_snoozed": null,
+      "t_x2_waiting": null,
+      "t_x3_blocked": null,
+      "t_x4_parked": null,
+      "t_x5_done": null,
+      "t_x6_killed": null,
+      "t_x7_inbox": null,
+      "t_x8_overdue": null,
+      "t_x9_leadtime": null,
+      "t_x10_target": null,
+      "t_x11_plain": null,
+      "t_x12_leverage": null
+    },
+    "nullReasons": {
+      "t_st4": "criticality supporting - not on the critical path",
+      "t_r1": "recurring, and supporting",
+      "t_r2": "recurring, and supporting",
+      "t_r3": "recurring - fixed overhead, never on the critical path (D5)",
+      "t_x1_snoozed": "criticality supporting",
+      "t_x2_waiting": "criticality supporting",
+      "t_x3_blocked": "criticality supporting",
+      "t_x4_parked": "criticality optional",
+      "t_x5_done": "closed",
+      "t_x6_killed": "closed",
+      "t_x7_inbox": "criticality supporting",
+      "t_x8_overdue": "criticality supporting",
+      "t_x9_leadtime": "criticality supporting",
+      "t_x10_target": "criticality supporting",
+      "t_x11_plain": "criticality optional",
+      "t_x12_leverage": "enabling, but no active milestone is reachable from it"
+    },
+    "minSlackByMilestone": {
+      "m_yh_live": -4,
+      "m_yh_import": 30,
+      "m_sw_saleready": 6,
+      "m_st_proposal": 11,
+      "m_fox_phase1": 19,
+      "m_octo_demo": -4
+    },
+    "negativeSlackMilestones": ["m_yh_live", "m_octo_demo"]
+  },
+
+  "coverage": {
+    "$derivation": [
+      "coverage[m] = blocking tasks of m holding at least one dependency edge",
+      "              / total blocking tasks of m.",
+      "Denominator excludes closed tasks (they need no edges) and recurring tasks",
+      "(D5: never on the critical path). An edge in either direction counts.",
+      "  m_yh_live: blockers t_yh1..t_yh6 = 6, with edges t_yh1..t_yh5 = 5 -> 5/6",
+      "             (t_r3 recurring and t_x5_done are both excluded)",
+      "  m_yh_import: t_yh8,t_yh9 = 2, both edged -> 2/2",
+      "  m_sw_saleready: t_sw1..t_sw5 = 5, only t_sw1,t_sw2 edged -> 2/5 = 0.40",
+      "  m_st_proposal: t_st1,t_st2 = 2, both edged -> 2/2",
+      "  m_fox_phase1: t_fox1,t_fox2 = 2, both edged -> 2/2",
+      "  m_octo_demo: t_oc1,t_oc2 = 2, both edged -> 2/2 (t_x6_killed excluded)"
+    ],
+    "byMilestone": {
+      "m_yh_live": 0.8333333333333334,
+      "m_yh_import": 1.0,
+      "m_sw_saleready": 0.4,
+      "m_st_proposal": 1.0,
+      "m_fox_phase1": 1.0,
+      "m_octo_demo": 1.0
+    },
+    "lowConfidenceMilestones": ["m_sw_saleready"]
+  },
+
+  "demand": {
+    "$derivation": [
+      "Eligible for demand: milestone_id = m, not recurring (D5), status not in",
+      "(blocked, waiting, parked, done, killed).",
+      "  weeks       = max(0.5, weeksUntil(due_date))",
+      "  demandHours = (blockingMin + 0.5 * enablingMin) / weeks / 60",
+      "  pressure    = 1 + 2 * max(0, -minSlack / 7)",
+      "  hardness    = hard ? 1.5 : 1.0",
+      "  required   += demandHours * pressure * strategic_weight * hardness",
+      "When coverage < 0.60 the slack is not trustworthy, so it must not feed",
+      "demand: demandHours falls back to totalBlockingMinutes / weeks / 60 and",
+      "pressure is forced to 1. Venture weight and milestone hardness are not",
+      "derived from slack, so they still apply.",
+      "",
+      "m_yh_live: eligible t_yh1 1440 blocking, t_yh6 360 blocking, t_yh7 600 enabling",
+      "  (t_yh2..t_yh5 are blocked, t_r3 recurring, t_x5_done closed)",
+      "  weeks = 12/7 = 1.7142857 ; demandHours = (1800 + 300)/60 / (12/7) = 245/12 = 20.4166667",
+      "  pressure = 1 + 2*(4/7) = 15/7 = 2.1428571 ; hard -> 1.5 ; weight 1.3",
+      "  20.4166667 * 2.1428571 = 43.75 exactly (245/12 * 15/7 = 3675/84)",
+      "  required = 43.75 * 1.3 * 1.5 = 85.3125",
+      "m_yh_import: t_yh8 360 + t_yh9 720 = 1080 blocking, 0 enabling",
+      "  weeks = 33/7 ; demandHours = 18 / (33/7) = 126/33 = 3.8181818",
+      "  pressure 1 (minSlack 30) ; soft ; weight 1.3 -> required = 4.9636364",
+      "m_sw_saleready: coverage 0.40 -> FALLBACK",
+      "  totalBlockingMinutes = 720+480+360+600+240 = 2400 = 40h",
+      "  weeks = 10/7 ; demandHours = 40 / (10/7) = 28 ; pressure forced to 1",
+      "  soft ; weight 1.2 -> required = 33.6",
+      "  (t_sw6, enabling 480, is dropped by the fallback formula, as specified)",
+      "m_st_proposal: eligible t_st1 480 blocking, t_st3 240 enabling (t_st2 blocked)",
+      "  weeks = 14/7 = 2 ; demandHours = (480+120)/60/2 = 5",
+      "  pressure 1 (minSlack 11) ; soft ; weight 1.3 -> required = 6.5",
+      "m_fox_phase1: t_fox1 720 + t_fox2 480 blocking, t_fox3 360 enabling",
+      "  weeks = 23/7 ; demandHours = (1200+180)/60 / (23/7) = 23/(23/7) = 7",
+      "  pressure 1 (minSlack 19) ; soft ; weight 1.0 -> required = 7.0",
+      "  (the project is paused but both children are active: V1 filters on task",
+      "   status, not project status, so they count)",
+      "m_octo_demo: due 2026-07-27, ALREADY PAST",
+      "  t_oc1 360 + t_oc2 240 = 600 blocking = 10h (t_x6_killed excluded)",
+      "  weeksUntil = -2/7 -> floored to 0.5, which is exactly what stops demand",
+      "  exploding as the date lands ; demandHours = 10/0.5 = 20",
+      "  pressure = 1 + 2*(4/7) = 15/7 ; soft ; weight 0.5",
+      "  required = 20 * 15/7 * 0.5 = 150/7 = 21.4285714"
+    ],
+    "requiredByMilestone": {
+      "m_yh_live": 85.3125,
+      "m_yh_import": 4.963636363636364,
+      "m_sw_saleready": 33.6,
+      "m_st_proposal": 6.5,
+      "m_fox_phase1": 7.0,
+      "m_octo_demo": 21.428571428571427
+    },
+    "requiredByVenture": {
+      "v_yachtyhub": 90.27613636363636,
+      "v_stackwrk": 33.6,
+      "v_seatop": 6.5,
+      "v_foxsolutions": 7.0,
+      "v_octo": 21.428571428571427
+    },
+    "totalRequired": 158.8047077922078,
+    "pressureByMilestone": {
+      "m_yh_live": 2.142857142857143,
+      "m_yh_import": 1.0,
+      "m_sw_saleready": 1.0,
+      "m_st_proposal": 1.0,
+      "m_fox_phase1": 1.0,
+      "m_octo_demo": 2.142857142857143
+    },
+    "rawShareByVenture": {
+      "$derivation": "required[v] / 158.8047077922078",
+      "v_yachtyhub": 0.5684727,
+      "v_stackwrk": 0.2115806,
+      "v_seatop": 0.0409308,
+      "v_foxsolutions": 0.0440793,
+      "v_octo": 0.1349366
+    },
+    "clampedShareByVenture": {
+      "$derivation": [
+        "clamp(rawShare, floor_share, ceiling_share).",
+        "seatop raw 0.0409 is below its 0.07 floor and foxsolutions raw 0.0441 is",
+        "below its 0.10 floor: both are raised. Nothing hits a ceiling.",
+        "Post-clamp sum = 1.08498993, which is why a renormalisation is needed."
+      ],
+      "v_yachtyhub": 0.5684727,
+      "v_stackwrk": 0.2115806,
+      "v_seatop": 0.07,
+      "v_foxsolutions": 0.1,
+      "v_octo": 0.1349366,
+      "sumBeforeRenormalise": 1.0849899
+    },
+    "shareByVenture": {
+      "$derivation": [
+        "clampedShare / 1.0849899, spec-literal: clamp once, renormalise once.",
+        "Consequence worth naming rather than hiding: renormalising after a",
+        "floor-raise pushes seatop (0.0645) and foxsolutions (0.0922) back under",
+        "their floors. The engine reports this in confidence.notes instead of",
+        "iterating to a fixed point, because the spec fixes the procedure."
+      ],
+      "v_yachtyhub": 0.5239428,
+      "v_stackwrk": 0.195007,
+      "v_seatop": 0.0645167,
+      "v_foxsolutions": 0.0921667,
+      "v_octo": 0.1243667,
+      "sum": 1.0
+    },
+    "venturesBelowFloorAfterRenormalise": ["v_seatop", "v_foxsolutions"],
+    "venturesAtCeiling": [],
+    "outcomeTargetsContributed": 0,
+    "$outcomeNote": "o_sw_firstsale and o_st_firstsale contribute exactly nothing to any figure above (D1)."
+  },
+
+  "capacity": {
+    "$derivation": [
+      "recurringHours = 12.5 h/week, from the three recurring tasks:",
+      "  t_r1 FREQ=DAILY 30m  -> 3.5 h/wk",
+      "  t_r2 FREQ=WEEKLY 120m -> 2.0 h/wk",
+      "  t_r3 FREQ=DAILY 60m  -> 7.0 h/wk",
+      "usable  = (availableHours - recurringHours) * (1 - 0.20)   [D9, non-negotiable]",
+      "deficit = 158.8047077922078 - usable",
+      "",
+      "Ranked by slip cost: hardness first (hard outranks soft), then cost_of_slip",
+      "severity, then minSlack ascending. A milestone with unknown minSlack sorts",
+      "last inside its bucket: unknown is not urgent.",
+      "  hard              -> m_yh_live",
+      "  soft, high cost   -> m_sw_saleready",
+      "  soft, medium cost -> m_st_proposal (11), m_fox_phase1 (19)",
+      "  soft, low cost    -> m_octo_demo (-4), m_yh_import (30)",
+      "hoursFreed by slipping a milestone = its own contribution to required."
+    ],
+    "recurringHours": 12.5,
+    "bufferRatio": 0.2,
+    "rankedBySlipCost": [
+      { "milestone_id": "m_yh_live", "hardness": "hard", "costSeverity": "high", "minSlack": -4, "hoursFreed": 85.3125 },
+      { "milestone_id": "m_sw_saleready", "hardness": "soft", "costSeverity": "high", "minSlack": 6, "hoursFreed": 33.6 },
+      { "milestone_id": "m_st_proposal", "hardness": "soft", "costSeverity": "medium", "minSlack": 11, "hoursFreed": 6.5 },
+      { "milestone_id": "m_fox_phase1", "hardness": "soft", "costSeverity": "medium", "minSlack": 19, "hoursFreed": 7.0 },
+      { "milestone_id": "m_octo_demo", "hardness": "soft", "costSeverity": "low", "minSlack": -4, "hoursFreed": 21.428571428571427 },
+      { "milestone_id": "m_yh_import", "hardness": "soft", "costSeverity": "low", "minSlack": 30, "hoursFreed": 4.963636363636364 }
+    ],
+    "slipCandidateOrder": [
+      "m_yh_import",
+      "m_octo_demo",
+      "m_fox_phase1",
+      "m_st_proposal",
+      "m_sw_saleready",
+      "m_yh_live"
+    ],
+    "cumulativeHoursFreed": [
+      4.963636363636364,
+      26.39220779220779,
+      33.39220779220779,
+      39.89220779220779,
+      73.49220779220779,
+      158.8047077922078
+    ],
+    "scenarios": [
+      {
+        "name": "a real week",
+        "availableHours": 40,
+        "$derivation": "usable = (40 - 12.5) * 0.8 = 22.0 ; deficit = 158.8047078 - 22 = 136.8047078",
+        "usableHours": 22.0,
+        "deficitHours": 136.8047077922078,
+        "verdict": "deficit",
+        "coversDeficitAtIndex": 5,
+        "$verdictNote": "Even slipping every soft milestone frees only 73.49 h/wk. The deficit is not clearable without slipping m_yh_live, the one hard milestone. That is the answer V1 exists to give."
+      },
+      {
+        "name": "an unrealistic week, to exercise a partial slip",
+        "availableHours": 200,
+        "$derivation": "usable = (200 - 12.5) * 0.8 = 150.0 ; deficit = 8.8047078",
+        "usableHours": 150.0,
+        "deficitHours": 8.804707792207805,
+        "verdict": "deficit",
+        "coversDeficitAtIndex": 1,
+        "$verdictNote": "Slipping m_yh_import alone frees 4.96 h/wk, not enough; adding m_octo_demo reaches 26.39 h/wk and clears it."
+      },
+      {
+        "name": "capacity exceeds demand",
+        "availableHours": 220,
+        "$derivation": "usable = (220 - 12.5) * 0.8 = 166.0 ; deficit = -7.1952922 -> no deficit",
+        "usableHours": 166.0,
+        "deficitHours": -7.195292207792196,
+        "verdict": "ok",
+        "coversDeficitAtIndex": null
+      }
+    ]
+  },
+
+  "scores": {
+    "$derivation": [
+      "score = (value ^ 1.2) * W * U * L / E,  W = strategic_weight * balance",
+      "E = (estimate_minutes * calibration[context] / 30) ^ 0.6",
+      "Cold start (D4): every context has sample_n 0, so calibration is 1.0 and is",
+      "not applied. No events exist, so balance = 1.0. `pressure` appears in",
+      "computeDemand and NOWHERE HERE, by design.",
+      "",
+      "t_x8_overdue: yachtyhub w1.3, value 6, 60m, deadline 2026-07-27 < today -> U=3.0",
+      "  E = (60/30)^0.6 = 2^0.6 = 1.51571657 ; 6^1.2 = 8.58581881 ; L = 1",
+      "  score = 8.58581881 * 1.3 * 3.0 / 1.51571657 = 22.0916644",
+      "t_x9_leadtime: stackwrk w1.2, value 5, 30m, deadline 2026-07-31, lead_time 3",
+      "  daysBetween(today, deadline) = 2 <= 3 -> U = 1.6 ; E = 1^0.6 = 1 ; L = 1",
+      "  score = 5^1.2 * 1.2 * 1.6 = 6.89866232 * 1.92 = 13.2454317",
+      "t_x10_target: seatop w1.3, value 4, 90m, target_date 2026-08-03 = 5 days -> U = 1.3",
+      "  E = 3^0.6 = 1.93318204 ; 4^1.2 = 5.27803164 ; L = 1",
+      "  score = 5.27803164 * 1.3 * 1.3 / 1.93318204 = 4.6140840",
+      "t_x11_plain: octo w0.5, value 3, 45m, no dates -> U = 1.0",
+      "  E = 1.5^0.6 = 1.27542290 ; 3^1.2 = 3.73719282 ; L = 1",
+      "  score = 3.73719282 * 0.5 / 1.27542290 = 1.4650785",
+      "t_x12_leverage: foxsolutions w1.0, value 8, 120m, no dates -> U = 1.0",
+      "  blocks t_x2_waiting and t_x3_blocked, neither closed -> directlyBlocked = 2",
+      "  t_x3_blocked is assigned to p_dev while t_x12 is p_tal -> unblocks another person",
+      "  L = 1 + 0.35*2 + 1.0 = 2.7 ; E = 4^0.6 = 2.29739671 ; 8^1.2 = 12.12573253",
+      "  score = 12.12573253 * 1.0 * 1.0 * 2.7 / 2.29739671 = 14.2506628"
+    ],
+    "tolerance": 0.0001,
+    "byTask": {
+      "t_x8_overdue": 22.0916644,
+      "t_x9_leadtime": 13.2454317,
+      "t_x10_target": 4.614084,
+      "t_x11_plain": 1.4650785,
+      "t_x12_leverage": 14.2506628
+    },
+    "zeroScored": {
+      "$derivation": "blocked or waiting -> score 0, unconditionally",
+      "t_x2_waiting": 0,
+      "t_x3_blocked": 0,
+      "t_yh2": 0,
+      "t_yh3": 0,
+      "t_yh4": 0,
+      "t_yh5": 0,
+      "t_st2": 0
+    },
+    "needsTriage": ["t_x1_snoozed"],
+    "$needsTriageNote": "snooze_count 3 >= 3: excluded from scoring entirely, returned for triage.",
+    "excludedFromOpenSet": [
+      "t_x4_parked",
+      "t_x5_done",
+      "t_x6_killed",
+      "t_x1_snoozed"
+    ],
+    "openSetSize": 28,
+    "valueInflation": {
+      "$derivation": [
+        "28 open tasks (status inbox or active, snooze_count < 3).",
+        "value >= 8: t_yh1 (9), t_sw1 (8), t_sw2 (8), t_st1 (8), t_x12_leverage (8) = 5.",
+        "5/28 = 0.1786 > 0.15, so the warning fires.",
+        "allowed = floor(0.15 * 28) = 4 -> excess = 1."
+      ],
+      "warned": true,
+      "highValueCount": 5,
+      "openCount": 28,
+      "fraction": 0.17857142857142858,
+      "allowed": 4,
+      "excess": 1,
+      "highValueTasks": ["t_yh1", "t_sw1", "t_sw2", "t_st1", "t_x12_leverage"]
+    }
+  },
+
+  "confidence": {
+    "$derivation": [
+      "D4 cold start. calibration sample_n is 0 for every context, so calibrated",
+      "is false. startedAt equals today, so 0 days of events exist and the balance",
+      "corrector is off. Attention debt accrues from day 1 but cannot release",
+      "until day 21."
+    ],
+    "calibrated": false,
+    "balancingActive": false,
+    "attentionDebtReleasing": false,
+    "expectedNoteSubjects": [
+      "m_sw_saleready coverage below 0.60, demand fell back to a slack-free formula",
+      "m_octo_demo due_date has passed, weeks floored at 0.5",
+      "v_seatop below its floor after renormalisation",
+      "v_foxsolutions below its floor after renormalisation",
+      "calibration not applied, fewer than 8 samples per context",
+      "balance corrector disabled, fewer than 14 days of events",
+      "value inflation, 5 of 28 open tasks at value 8 or above"
+    ]
+  }
+}
