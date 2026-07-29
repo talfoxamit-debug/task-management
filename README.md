@@ -53,8 +53,19 @@ Override the target server with `TEST_PGHOST`, `TEST_PGPORT`, `TEST_PGUSER`.
 
 ### 1. Database
 
-Any PostgreSQL 15+ works; Supabase is what this was built for. Apply the
-migrations **in order**:
+Any PostgreSQL 15+ works; Supabase is what this was built for. One command
+applies the migrations in order and then proves the triggers on the database it
+just built:
+
+```bash
+./scripts/provision.sh "postgresql://postgres:PASS@db.xxx.supabase.co:5432/postgres"
+```
+
+Use the **direct** connection (port 5432) for this — the pooler cannot run the
+multi-statement DDL in these migrations. It ends with a summary of what is in the
+database and the remaining steps.
+
+Or apply them by hand, **in order**:
 
 ```bash
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f supabase/migrations/0001_schema.sql
