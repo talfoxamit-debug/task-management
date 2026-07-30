@@ -21,10 +21,26 @@ export default function Login() {
       process.env.NEXT_PUBLIC_SUPABASE_URL!,
       process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
     );
+    const redirect = `${window.location.origin}/auth/callback`;
     const { error } = await supabase.auth.signInWithOtp({
       email,
-      options: { emailRedirectTo: `${window.location.origin}/auth/callback` },
+      options: { emailRedirectTo: redirect },
     });
+    if (error) {
+      // The on-screen text stays generic, but the real reason goes to the
+      // console. This leaks nothing: signInWithOtp is a browser-to-Supabase
+      // call, so the same message is already sitting in the Network tab for
+      // anyone who opens it. Swallowing it here only blinds the operator.
+      // The two that actually happen: the redirect URL is not allow-listed in
+      // Supabase (common on preview deployments, whose hostname changes every
+      // push), and the built-in SMTP hourly cap.
+      console.error('[taskos] sign-in failed', {
+        message: error.message,
+        status: error.status,
+        redirect,
+        fix: 'Supabase → Authentication → URL Configuration → Redirect URLs must contain this exact redirect.',
+      });
+    }
     setState(error ? 'error' : 'sent');
   }
 
