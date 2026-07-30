@@ -39,6 +39,8 @@ function psql(db: string, args: string[]): void {
 export interface TestDb {
   sql: Sql;
   name: string;
+  /** Connection string for this database, for code that reads DATABASE_URL. */
+  url: string;
   drop: () => Promise<void>;
 }
 
@@ -105,6 +107,7 @@ export async function freshDb(label: string): Promise<TestDb> {
   return {
     sql,
     name,
+    url: `postgresql://${USER}@${HOST}:${PORT}/${name}`,
     drop: async () => {
       await sql.end({ timeout: 5 });
       setSql(null);

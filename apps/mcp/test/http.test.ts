@@ -21,6 +21,10 @@ let url: string;
 beforeAll(async () => {
   db = await freshDb('http');
   process.env['TASKOS_TOKEN'] = TOKEN;
+  // Point the server's own connection at this test database, so /health's
+  // database status is exercised for real rather than depending on whoever ran
+  // the suite having exported DATABASE_URL.
+  process.env['DATABASE_URL'] = db.url;
 
   httpServer = createServer((req, res) => {
     void entrypoint(req, res);
