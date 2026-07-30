@@ -228,3 +228,46 @@ Two consequences worth naming rather than hiding:
 - **Outcome indicators count events, nothing more.** With no verification
   integrations, an indicator with no recorded events reports `null` — "nothing
   has been recorded" — never `0`, which would read as evidence of zero activity.
+
+## The dashboard (apps/web)
+
+Read-only Next.js page showing what `capacity()` and `venture_status()` already
+compute. Entry stays conversational through Claude; a page that cannot write
+cannot corrupt anything.
+
+It imports `loadPortfolio` and the engine pipeline from `@taskos/mcp` rather
+than querying for itself. If it computed its own numbers, the UI and Claude
+would eventually disagree about what is going to slip and there would be no way
+to tell which was right.
+
+### Deploying it
+
+A **second** Vercel project, same repository, **Root Directory `apps/web`**,
+against the same database.
+
+| variable | what it is |
+|---|---|
+| `DATABASE_URL` | the same transaction-pooler string the MCP server uses |
+| `NEXT_PUBLIC_SUPABASE_URL` | Supabase → Settings → API → Project URL |
+| `NEXT_PUBLIC_SUPABASE_ANON_KEY` | the publishable/anon key (safe in a browser) |
+
+Then, once per person who should have access — there is no self-signup, by
+design:
+
+```sql
+-- after they have signed in once, so auth.users has them
+insert into workspace_members (workspace_id, user_id)
+select '00000000-0000-0000-0000-000000000001', id
+from auth.users where email = 'them@example.com';
+```
+
+A signed-in user with no membership row sees nothing. There is deliberately no
+fallback to "the first workspace": that fallback is how a stranger ends up
+looking at somebody else's ventures.
+
+### Why the build script says `--webpack`
+
+`@taskos/engine` and `@taskos/mcp` are TypeScript **source** in sibling
+workspaces using NodeNext resolution, where a file imports its sibling as
+`./load.js`. TypeScript maps that back to `./load.ts`; bundlers do not unless
+told, and the `extensionAlias` that tells them is webpack configuration.

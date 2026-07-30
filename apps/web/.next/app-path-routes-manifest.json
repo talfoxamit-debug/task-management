@@ -1,0 +1,7 @@
+{
+  "/_not-found/page": "/_not-found",
+  "/_global-error/page": "/_global-error",
+  "/auth/callback/route": "/auth/callback",
+  "/login/page": "/login",
+  "/page": "/"
+}
