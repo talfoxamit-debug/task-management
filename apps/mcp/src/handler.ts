@@ -53,7 +53,21 @@ export default async function handler(
   }
 
   try {
-    const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
+    const transport = new StreamableHTTPServerTransport({
+      sessionIdGenerator: undefined,
+      // Reply with a plain JSON body instead of an SSE stream.
+      //
+      // In stateless mode the SDK otherwise answers over text/event-stream and
+      // holds the stream open after writing the result. Behind a serverless
+      // platform that response can be buffered until the stream closes, so the
+      // client waits for an event that never arrives: initialize and tools/list
+      // completed, while the first tools/call hung until the client gave up at
+      // 60s, leaving no log line at all because the request never finished.
+      //
+      // Nothing here needs streaming - every tool returns one JSON document -
+      // so the stream buys nothing and costs a failure mode.
+      enableJsonResponse: true,
+    });
     const server = buildServer(getSql());
 
     res.on('close', () => {
