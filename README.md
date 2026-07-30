@@ -251,6 +251,24 @@ against the same database.
 | `NEXT_PUBLIC_SUPABASE_URL` | Supabase → Settings → API → Project URL |
 | `NEXT_PUBLIC_SUPABASE_ANON_KEY` | the publishable/anon key (safe in a browser) |
 
+`apps/web/vercel.json` pins `"framework": "nextjs"`. That is not decoration.
+Vercel's framework detection can land on **Other** for a project whose Root
+Directory points into a workspace, and **Other** means "serve a static `public/`
+folder" — so the build compiles perfectly, prints its route table, and then dies
+with `No Output Directory named "public" found`. Pinning it in the repository
+means the setting cannot be lost to a dashboard edit or a re-import. Settings in
+`vercel.json` take precedence over the dashboard, so nothing needs changing
+there.
+
+Also add the deployment's callback to **Supabase → Authentication → URL
+Configuration → Redirect URLs**:
+
+```
+https://<the-web-deployment>/auth/callback
+```
+
+Without it Supabase refuses the redirect and the magic link lands nowhere.
+
 Then, once per person who should have access — there is no self-signup, by
 design:
 
