@@ -2,7 +2,7 @@ import { createServer } from 'node:http';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { checkCredential } from './auth.js';
 import { getSql } from './db.js';
-import { buildServer } from './server.js';
+import { buildServer } from './mcp-server.js';
 
 /**
  * Local runner for the same handler Vercel serves, so the endpoint can be

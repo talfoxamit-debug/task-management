@@ -2,7 +2,7 @@ import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { checkCredential } from './auth.js';
 import { getSql } from './db.js';
-import { buildServer } from './server.js';
+import { buildServer } from './mcp-server.js';
 
 /**
  * THE request handler for POST /api/mcp. Streamable HTTP, stateless.

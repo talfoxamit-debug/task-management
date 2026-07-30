@@ -4,7 +4,7 @@ import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/
 import { createServer, type Server } from 'node:http';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { checkCredential } from '../src/auth.js';
-import { buildServer } from '../src/server.js';
+import { buildServer } from '../src/mcp-server.js';
 import { freshDb, type TestDb } from './harness.js';
 
 /**
