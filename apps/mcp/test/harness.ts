@@ -28,6 +28,8 @@ export const MIGRATIONS = [
   '0002_triggers.sql',
   '0003_seed.sql',
   '0004_unsorted_venture.sql',
+  '0005_tenancy.sql',
+  '0006_provision_workspace.sql',
 ];
 
 function psql(db: string, args: string[]): void {
@@ -119,14 +121,15 @@ export async function freshDb(label: string): Promise<TestDb> {
 
 /** Move settings.started_at back, to cross the D4 cold-start gates. */
 export async function ageSystem(sql: Sql, days: number): Promise<void> {
-  await sql`update settings set started_at = now() - ${`${days} days`}::interval where id = 1`;
+  await sql`update settings set started_at = now() - ${`${days} days`}::interval`;
 }
 
 /** Plant an event this many days ago, so daysOfEvents crosses the 14-day gate. */
 export async function plantOldEvent(sql: Sql, days: number): Promise<void> {
   await sql`
-    insert into events (actor, verb, payload, at)
-    values ('test', 'backdated', '{}'::jsonb, now() - ${`${days} days`}::interval)
+    insert into events (actor, verb, payload, at, workspace_id)
+    values ('test', 'backdated', '{}'::jsonb, now() - ${`${days} days`}::interval,
+            (select id from workspaces limit 1))
   `;
 }
 

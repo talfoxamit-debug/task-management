@@ -1,6 +1,6 @@
 import type { Confidence, Task } from '@taskos/engine';
 import { daysBetween } from '@taskos/engine';
-import { timed, type Sql } from './db.js';
+import { resolveWorkspaceId, timed, type Sql } from './db.js';
 import { loadPortfolio, type Portfolio } from './load.js';
 import { findReplay, isCycleRejection, isUniqueViolation, recordReceipt } from './idempotency.js';
 import { envelope, LIST_CAP, narrow, plainConfidence, r1, r3, type ToolEnvelope } from './narrow.js';
@@ -56,27 +56,34 @@ export async function capture(sql: Sql, input: CaptureInput): Promise<ToolEnvelo
     });
   }
 
+  const workspaceId = await resolveWorkspaceId(sql);
   const holding = await sql<Array<{ id: string }>>`
-    select id from ventures where slug = 'unsorted' limit 1
+    select id from ventures
+     where slug = 'unsorted' and workspace_id = ${workspaceId} limit 1
   `;
-  const holdingId = holding[0]?.id;
-  if (!holdingId) {
-    return envelope(plainConfidence([]), { created: [], total: 0 }, [
-      {
-        code: 'no_input',
-        message:
-          "the 'unsorted' holding venture is missing; run migration 0004 before capturing (tasks.venture_id is NOT NULL)",
-      },
-    ]);
-  }
+  // Create the holding venture on demand. A workspace provisioned through
+  // taskos_provision_workspace already has one, but one created any other way
+  // does not, and capture() failing is the worst possible way to find that out:
+  // the whole point of the tool is that a thought can be dropped anywhere.
+  const holdingId =
+    holding[0]?.id ??
+    (
+      await sql<Array<{ id: string }>>`
+        insert into ventures (workspace_id, name, slug, strategic_weight,
+                              floor_share, ceiling_share, active)
+        values (${workspaceId}, 'Unsorted inbox', 'unsorted', 0.3, 0.0, 0.1, false)
+        on conflict (workspace_id, slug) do update set active = false
+        returning id`
+    )[0]!.id;
 
   try {
     const created = await sql.begin(async (tx) => {
       const rows: Array<{ id: string; title: string }> = [];
       for (const line of lines) {
         const inserted = await tx<Array<{ id: string; title: string }>>`
-          insert into tasks (venture_id, title, estimate_minutes, status, context, criticality)
-          values (${holdingId}, ${line}, 15, 'inbox', 'admin', 'supporting')
+          insert into tasks (workspace_id, venture_id, title, estimate_minutes,
+                             status, context, criticality)
+          values (${workspaceId}, ${holdingId}, ${line}, 15, 'inbox', 'admin', 'supporting')
           returning id, title
         `;
         rows.push(inserted[0]!);
@@ -85,6 +92,7 @@ export async function capture(sql: Sql, input: CaptureInput): Promise<ToolEnvelo
         key: input.idempotency_key,
         actor: ACTOR,
         verb: 'captured',
+        workspace_id: workspaceId,
         venture_id: holdingId,
         result: { created: rows, total: rows.length },
       });
@@ -122,15 +130,17 @@ export interface ProcessInboxResult extends ToolEnvelope {
 
 /** Unprocessed items with PROPOSED fields. Nothing is written; Tal confirms. */
 export async function processInbox(sql: Sql): Promise<ToolEnvelope> {
-  const [items, ventures, projects] = await Promise.all([
-    sql<Array<{ id: string; title: string; notes: string | null }>>`
-      select id, title, notes from tasks where status = 'inbox' order by created_at`,
-    sql<Array<Record<string, unknown>>>`
-      select id, name, slug, strategic_weight, floor_share, ceiling_share, active
-        from ventures order by slug`,
-    sql<Array<{ id: string; name: string; venture_id: string; status: string }>>`
-      select id, name, venture_id, status from projects`,
-  ]);
+  // Sequential, not Promise.all: concurrent reads deadlock the transaction
+  // pooler. See the note in load.ts.
+  const workspaceId = await resolveWorkspaceId(sql);
+  const items = await sql<Array<{ id: string; title: string; notes: string | null }>>`
+    select id, title, notes from tasks
+     where status = 'inbox' and workspace_id = ${workspaceId} order by created_at`;
+  const ventures = await sql<Array<Record<string, unknown>>>`
+    select id, name, slug, strategic_weight, floor_share, ceiling_share, active
+      from ventures where workspace_id = ${workspaceId} order by slug`;
+  const projects = await sql<Array<{ id: string; name: string; venture_id: string; status: string }>>`
+    select id, name, venture_id, status from projects where workspace_id = ${workspaceId}`;
 
   const ventureValues = ventures.map((v) => ({
     id: String(v['id']),
@@ -230,16 +240,18 @@ export async function commitTasks(
 
   try {
     const result = await sql.begin(async (tx) => {
+      const workspaceId = await resolveWorkspaceId(sql);
       const ventures = await tx<Array<{ id: string; slug: string; name: string }>>`
-        select id, slug, name from ventures`;
+        select id, slug, name from ventures where workspace_id = ${workspaceId}`;
       const ventureBySlug = new Map(ventures.map((v) => [v.slug.toLowerCase(), v.id]));
       const ventureByName = new Map(ventures.map((v) => [v.name.toLowerCase(), v.id]));
 
       const projects = await tx<Array<{ id: string; name: string; venture_id: string }>>`
-        select id, name, venture_id from projects`;
+        select id, name, venture_id from projects where workspace_id = ${workspaceId}`;
       const milestones = await tx<Array<{ id: string; name: string; venture_id: string }>>`
-        select id, name, venture_id from milestones`;
-      const people = await tx<Array<{ id: string; name: string }>>`select id, name from people`;
+        select id, name, venture_id from milestones where workspace_id = ${workspaceId}`;
+      const people = await tx<Array<{ id: string; name: string }>>`
+        select id, name from people where workspace_id = ${workspaceId}`;
 
       const created: Array<{ id: string; title: string; venture: string }> = [];
       const titleToId = new Map<string, string>();
@@ -279,6 +291,7 @@ export async function commitTasks(
         }
 
         const fields = {
+          workspace_id: workspaceId,
           project_id: projectId,
           venture_id: ventureId,
           milestone_id: milestoneId,
@@ -336,7 +349,8 @@ export async function commitTasks(
 
       // Resolve a title to a task id: this batch first, then open tasks.
       const openTasks = await tx<Array<{ id: string; title: string }>>`
-        select id, title from tasks where status not in ('done','killed')`;
+        select id, title from tasks
+         where workspace_id = ${workspaceId} and status not in ('done','killed')`;
 
       const resolve = (title: string, forTask: string): string => {
         const key = title.toLowerCase();
@@ -377,6 +391,7 @@ export async function commitTasks(
         key: input.idempotency_key,
         actor: ACTOR,
         verb: 'committed_tasks',
+        workspace_id: workspaceId,
         result: { created, edges, total: created.length },
       });
 
@@ -444,8 +459,11 @@ export async function setMilestone(
     });
   }
 
+  const workspaceId = await resolveWorkspaceId(sql);
   const ventures = await sql<Array<{ id: string; slug: string }>>`
-    select id, slug from ventures where slug = ${input.venture} or name = ${input.venture} limit 1
+    select id, slug from ventures
+     where workspace_id = ${workspaceId}
+       and (slug = ${input.venture} or name = ${input.venture}) limit 1
   `;
   const venture = ventures[0];
   if (!venture) {
@@ -472,8 +490,9 @@ export async function setMilestone(
         )[0]!
       : (
           await tx<Array<Record<string, unknown>>>`
-            insert into milestones (venture_id, name, due_date, hardness, cost_of_slip, confirmed_at)
-            values (${venture.id}, ${input.name}, ${input.due_date}::date, ${input.hardness},
+            insert into milestones (workspace_id, venture_id, name, due_date, hardness,
+                                    cost_of_slip, confirmed_at)
+            values (${workspaceId}, ${venture.id}, ${input.name}, ${input.due_date}::date, ${input.hardness},
                     ${input.cost_of_slip}, now())
             returning id, name, due_date::text as due_date, hardness, cost_of_slip, status
           `
@@ -483,6 +502,7 @@ export async function setMilestone(
       key: input.idempotency_key,
       actor: ACTOR,
       verb: existing[0] ? 'milestone_updated' : 'milestone_set',
+      workspace_id: workspaceId,
       venture_id: venture.id,
       result: { milestone: row, updated: Boolean(existing[0]) },
     });
@@ -492,7 +512,7 @@ export async function setMilestone(
   const notes = [
     'a milestone is an event you control, so it drives demand and gets a critical path (D1)',
   ];
-  const today = await sql<Array<{ d: string }>>`select taskos_today()::text as d`;
+  const today = await sql<Array<{ d: string }>>`select taskos_today(${workspaceId})::text as d`;
   const days = daysBetween(today[0]!.d, input.due_date);
   if (days !== null && days < 0) {
     notes.push(
@@ -529,8 +549,11 @@ export async function setOutcomeTarget(
     });
   }
 
+  const workspaceId = await resolveWorkspaceId(sql);
   const ventures = await sql<Array<{ id: string; slug: string }>>`
-    select id, slug from ventures where slug = ${input.venture} or name = ${input.venture} limit 1
+    select id, slug from ventures
+     where workspace_id = ${workspaceId}
+       and (slug = ${input.venture} or name = ${input.venture}) limit 1
   `;
   const venture = ventures[0];
   if (!venture) {
@@ -563,8 +586,8 @@ export async function setOutcomeTarget(
         )[0]!
       : (
           await tx<Array<Record<string, unknown>>>`
-            insert into outcome_targets (venture_id, name, target_date, indicator_config)
-            values (${venture.id}, ${input.name}, ${input.target_date ?? null}::date,
+            insert into outcome_targets (workspace_id, venture_id, name, target_date, indicator_config)
+            values (${workspaceId}, ${venture.id}, ${input.name}, ${input.target_date ?? null}::date,
                     ${tx.json({ indicators } as never)})
             returning id, name, target_date::text as target_date, status, indicator_config
           `
@@ -575,7 +598,8 @@ export async function setOutcomeTarget(
     const unknown: string[] = [];
     for (const mid of input.milestone_ids ?? []) {
       const found = await tx<Array<{ id: string }>>`
-        select id from milestones where id = ${mid} limit 1
+        select id from milestones
+         where id = ${mid} and workspace_id = ${workspaceId} limit 1
       `;
       if (!found[0]) {
         unknown.push(mid);
@@ -592,6 +616,7 @@ export async function setOutcomeTarget(
       key: input.idempotency_key,
       actor: ACTOR,
       verb: existing[0] ? 'outcome_updated' : 'outcome_set',
+      workspace_id: workspaceId,
       venture_id: venture.id,
       result: { outcome: row, linked_milestones: linked },
     });
@@ -646,7 +671,10 @@ export async function capacity(
   );
   const expiredCount = Number(expired[0]?.n ?? 0);
 
-  const portfolio = await timed('capacity.load_portfolio', 15_000, () => loadPortfolio(sql));
+  const workspaceId = await resolveWorkspaceId(sql);
+  const portfolio = await timed('capacity.load_portfolio', 15_000, () =>
+    loadPortfolio(sql, workspaceId),
+  );
   const pipeline = runEngine(portfolio);
   const result = runCapacity(portfolio, pipeline, input.available_hours);
 
@@ -681,6 +709,9 @@ export async function capacity(
   );
 
   const notes = [...result.confidence.notes];
+  for (const e of [...pipeline.demand.errors, ...pipeline.slack.errors]) {
+    if (e.code === 'no_input' && !notes.includes(e.message)) notes.push(e.message);
+  }
   if (expiredCount > 0) {
     notes.unshift(
       `${expiredCount} milestone(s) were past due and have just been flipped to missed`,
@@ -722,11 +753,17 @@ export async function capacity(
               .slice(0, result.coversDeficitAtIndex + 1)
               .map((c) => c.name),
     },
-    [...pipeline.demand.errors, ...pipeline.slack.errors].map((e) => ({
-      code: e.code,
-      message: e.message,
-      ...(e.subjects ? { subjects: e.subjects } : {}),
-    })),
+    // `no_input` is not a failure: it is what an empty or brand-new workspace
+    // legitimately looks like, and reporting ok:false for one would say the
+    // system broke when it simply has nothing yet. It still travels - as a
+    // note, because D7 requires every empty answer to carry its reason.
+    [...pipeline.demand.errors, ...pipeline.slack.errors]
+      .filter((e) => e.code !== 'no_input')
+      .map((e) => ({
+        code: e.code,
+        message: e.message,
+        ...(e.subjects ? { subjects: e.subjects } : {}),
+      })),
   );
 }
 
@@ -735,7 +772,8 @@ export async function capacity(
 // ---------------------------------------------------------------------------
 
 export async function ventureStatus(sql: Sql, input: { slug: string }): Promise<ToolEnvelope> {
-  const portfolio = await loadPortfolio(sql);
+  const workspaceId = await resolveWorkspaceId(sql);
+  const portfolio = await loadPortfolio(sql, workspaceId);
   const venture = portfolio.ventures.find(
     (v) => v.slug === input.slug || v.name.toLowerCase() === input.slug.toLowerCase(),
   );
@@ -806,6 +844,7 @@ export async function ventureStatus(sql: Sql, input: { slug: string }): Promise<
       const rows = await sql<Array<{ n: string }>>`
         select count(*)::text as n from events
          where verb = ${name} and venture_id = ${venture.id}
+           and workspace_id = ${workspaceId}
       `;
       const n = Number(rows[0]?.n ?? 0);
       counts[name] = n === 0 ? null : n;
@@ -881,7 +920,8 @@ export interface ListFilter {
 }
 
 export async function listTasks(sql: Sql, filter: ListFilter): Promise<ToolEnvelope> {
-  const portfolio = await loadPortfolio(sql);
+  const workspaceId = await resolveWorkspaceId(sql);
+  const portfolio = await loadPortfolio(sql, workspaceId);
   const pipeline = runEngine(portfolio);
 
   let venture = null as null | (typeof portfolio.ventures)[number];
@@ -985,10 +1025,12 @@ export async function close(
     });
   }
 
+  const workspaceId = await resolveWorkspaceId(sql);
   const existing = await sql<
     Array<{ id: string; status: string; title: string; context: string; estimate_minutes: number }>
   >`
-    select id, status, title, context, estimate_minutes from tasks where id = ${input.task_id}
+    select id, status, title, context, estimate_minutes from tasks
+     where id = ${input.task_id} and workspace_id = ${workspaceId}
   `;
   const task = existing[0];
   if (!task) {
@@ -1029,8 +1071,9 @@ export async function close(
 
     if (input.evidence) {
       await tx`
-        insert into events (actor, verb, task_id, payload)
-        values (${ACTOR}, 'evidence', ${task.id}, ${tx.json({ evidence: input.evidence } as never)})
+        insert into events (actor, verb, task_id, workspace_id, payload)
+        values (${ACTOR}, 'evidence', ${task.id}, ${workspaceId},
+                ${tx.json({ evidence: input.evidence } as never)})
       `;
     }
 
@@ -1042,6 +1085,7 @@ export async function close(
                count(*)::text as n
           from tasks
          where context = ${task.context}
+           and workspace_id = ${workspaceId}
            and actual_inferred = false
            and actual_minutes is not null
            and status = 'done'
@@ -1049,9 +1093,10 @@ export async function close(
       const ratio = Number(rows[0]?.ratio ?? 1);
       const n = Number(rows[0]?.n ?? 0);
       await tx`
-        insert into calibration (context, ratio, sample_n)
-        values (${task.context}, ${ratio}, ${n})
-        on conflict (context) do update set ratio = excluded.ratio, sample_n = excluded.sample_n
+        insert into calibration (workspace_id, context, ratio, sample_n)
+        values (${workspaceId}, ${task.context}, ${ratio}, ${n})
+        on conflict (workspace_id, context) do update
+          set ratio = excluded.ratio, sample_n = excluded.sample_n
       `;
       calibration = { ratio, sample_n: n };
     }
@@ -1061,6 +1106,7 @@ export async function close(
       actor: ACTOR,
       verb: 'closed',
       task_id: task.id,
+      workspace_id: workspaceId,
       result: {
         closed: { task_id: task.id, title: task.title, status: 'done' },
         actual_minutes: actual,
@@ -1075,7 +1121,8 @@ export async function close(
   const askedToday = await sql<Array<{ n: string }>>`
     select count(*)::text as n from events
      where verb = 'asked_actual'
-       and at >= (taskos_today()::timestamptz)
+       and workspace_id = ${workspaceId}
+       and at >= (taskos_today(${workspaceId})::timestamptz)
   `;
   let askAbout: { task_id: string; title: string; estimate_minutes: number } | null = null;
   if (Number(askedToday[0]?.n ?? 0) === 0) {
@@ -1084,6 +1131,7 @@ export async function close(
     >`
       select id, title, estimate_minutes from tasks
        where status = 'done' and actual_inferred = true
+         and workspace_id = ${workspaceId}
        order by (context = 'deep_work') desc, closed_at desc nulls last
        limit 1
     `;
@@ -1091,8 +1139,9 @@ export async function close(
     if (c) {
       askAbout = { task_id: c.id, title: c.title, estimate_minutes: c.estimate_minutes };
       await sql`
-        insert into events (actor, verb, task_id, payload)
-        values ('system', 'asked_actual', ${c.id}, ${sql.json({ reason: 'daily single question (D6)' } as never)})
+        insert into events (actor, verb, task_id, workspace_id, payload)
+        values ('system', 'asked_actual', ${c.id}, ${workspaceId},
+                ${sql.json({ reason: 'daily single question (D6)' } as never)})
       `;
     }
   }

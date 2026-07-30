@@ -18,6 +18,7 @@ import { loadSettings, today as dbToday, type Settings, type Sql } from './db.js
  */
 
 export interface Portfolio {
+  workspaceId: string;
   settings: Settings;
   today: string;
   ventures: Venture[];
@@ -54,9 +55,9 @@ async function sequentially<T extends readonly (() => Promise<unknown>)[]>(
   return out as { -readonly [K in keyof T]: Awaited<ReturnType<T[K]>> };
 }
 
-export async function loadPortfolio(sql: Sql): Promise<Portfolio> {
-  const settings = await loadSettings(sql);
-  const todayStr = await dbToday(sql);
+export async function loadPortfolio(sql: Sql, workspaceId: string): Promise<Portfolio> {
+  const settings = await loadSettings(sql, workspaceId);
+  const todayStr = await dbToday(sql, workspaceId);
 
   // SEQUENTIAL, not Promise.all.
   //
@@ -72,22 +73,22 @@ export async function loadPortfolio(sql: Sql): Promise<Portfolio> {
       () => sql<Array<Record<string, unknown>>>`
         select id, name, slug, strategic_weight, floor_share, ceiling_share,
                attention_debt_hours, current_bottleneck, active
-          from ventures order by slug`,
+          from ventures where workspace_id = ${workspaceId} order by slug`,
       () => sql<Array<Record<string, unknown>>>`
         select id, venture_id, name, due_date::text as due_date, hardness,
                cost_of_slip, status
-          from milestones order by due_date, name`,
+          from milestones where workspace_id = ${workspaceId} order by due_date, name`,
       () => sql<Array<Record<string, unknown>>>`
         select id, venture_id, name, target_date::text as target_date, status,
                indicator_config
-          from outcome_targets order by name`,
+          from outcome_targets where workspace_id = ${workspaceId} order by name`,
       () => sql<Array<Record<string, unknown>>>`
-        select outcome_id, milestone_id from outcome_milestones`,
+        select l.outcome_id, l.milestone_id from outcome_milestones l join outcome_targets o on o.id = l.outcome_id where o.workspace_id = ${workspaceId}`,
       () => sql<Array<Record<string, unknown>>>`
         select id, venture_id, milestone_id, name, outcome, status,
                last_movement_at
-          from projects order by name`,
-      () => sql<Array<Record<string, unknown>>>`select id, name, role from people order by name`,
+          from projects where workspace_id = ${workspaceId} order by name`,
+      () => sql<Array<Record<string, unknown>>>`select id, name, role from people where workspace_id = ${workspaceId} order by name`,
       () => sql<Array<Record<string, unknown>>>`
         select id, project_id, venture_id, milestone_id, title, notes,
                criticality, context, energy, estimate_minutes, actual_minutes,
@@ -98,18 +99,20 @@ export async function loadPortfolio(sql: Sql): Promise<Portfolio> {
                waiting_since, is_recurring, recurrence_rule, created_at,
                last_touched_at, closed_at
           from tasks
-         where status not in ('done','killed')
-            or closed_at > now() - interval '30 days'
+         where workspace_id = ${workspaceId}
+           and (status not in ('done','killed')
+                or closed_at > now() - interval '30 days')
          order by created_at`,
       () => sql<Array<Record<string, unknown>>>`
-        select task_id, blocks_task_id from task_dependencies`,
-      () => sql<Array<Record<string, unknown>>>`select context, ratio, sample_n from calibration`,
-      () => sql<Array<{ at: Date }>>`select min(at) as at from events`,
+        select d.task_id, d.blocks_task_id from task_dependencies d join tasks t on t.id = d.task_id where t.workspace_id = ${workspaceId}`,
+      () => sql<Array<Record<string, unknown>>>`select context, ratio, sample_n from calibration where workspace_id = ${workspaceId}`,
+      () => sql<Array<{ at: Date }>>`select min(at) as at from events where workspace_id = ${workspaceId}`,
     ] as const);
 
   const firstAt = firstEvent[0]?.at ?? null;
 
   return {
+    workspaceId,
     settings,
     today: todayStr,
     ventures: ventures.map((v) => ({

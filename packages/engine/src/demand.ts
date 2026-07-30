@@ -284,6 +284,12 @@ export function computeDemand(
   const clampedShareByVenture: Record<string, number> = {};
   const shareByVenture: Record<string, number> = {};
 
+  if (activeVentures.length === 0) {
+    notes.push(
+      'no active ventures: there is nothing to allocate a week across yet',
+    );
+  }
+
   const noDemand = totalRequired <= 0;
   if (noDemand && activeVentures.length > 0) {
     notes.push(
@@ -350,16 +356,20 @@ export function computeDemand(
   // above 1.0 cannot all be met, and ceilings that sum below 1.0 cannot fill the
   // budget. Diagnose that from the configuration itself rather than inferring it
   // from the outcome, which only shows the symptom when both sides are violated.
+  // Vacuous with no active ventures: zero bounds cannot be unsatisfiable, and
+  // reporting that they are makes a brand-new portfolio look broken. This bit an
+  // integration test on a freshly provisioned workspace whose only venture was
+  // the inactive inbox holder.
   const sumFloors = activeVentures.reduce((a, v) => a + v.floor_share, 0);
   const sumCeilings = activeVentures.reduce((a, v) => a + v.ceiling_share, 0);
-  if (sumFloors > 1 + 1e-9) {
+  if (activeVentures.length > 0 && sumFloors > 1 + 1e-9) {
     errors.push({
       code: 'bounds_unsatisfiable',
       message: `floor_share values sum to ${sumFloors.toFixed(3)}, above the whole budget: they cannot all be honoured and every share lands under its floor`,
       subjects: activeVentures.map((v) => v.id),
     });
   }
-  if (sumCeilings < 1 - 1e-9) {
+  if (activeVentures.length > 0 && sumCeilings < 1 - 1e-9) {
     errors.push({
       code: 'bounds_unsatisfiable',
       message: `ceiling_share values sum to ${sumCeilings.toFixed(3)}, below the whole budget: the shares cannot both respect the ceilings and sum to 1.0`,

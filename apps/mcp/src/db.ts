@@ -80,15 +80,42 @@ export interface Settings {
   started_at: string;
 }
 
-export async function loadSettings(sql: Sql): Promise<Settings> {
+/**
+ * Which workspace this caller acts in.
+ *
+ * Today a single shared token means a single workspace, so the one that exists
+ * is used. This function is the seam where per-user identity plugs in later: it
+ * is the ONLY place a workspace is chosen, so when tokens map to users the
+ * change is here and nowhere else.
+ *
+ * It refuses to guess once a second workspace exists, rather than silently
+ * picking one and writing somebody's tasks into it.
+ */
+export async function resolveWorkspaceId(sql: Sql): Promise<string> {
+  const configured = process.env['TASKOS_WORKSPACE_ID'];
+  if (configured) return configured;
+
+  const rows = await sql<Array<{ id: string }>>`select id from workspaces order by created_at`;
+  if (rows.length === 1) return rows[0]!.id;
+  if (rows.length === 0) {
+    throw new Error('no workspace exists: run migration 0005, which creates the first one');
+  }
+  throw new Error(
+    `${rows.length} workspaces exist and this token maps to no particular one; set TASKOS_WORKSPACE_ID, or give the caller an identity`,
+  );
+}
+
+export async function loadSettings(sql: Sql, workspaceId: string): Promise<Settings> {
   const rows = await sql<Array<{ active_tz: string; buffer_ratio: string; started_at: Date }>>`
-    select active_tz, buffer_ratio, started_at from settings where id = 1
+    select active_tz, buffer_ratio, started_at from settings where workspace_id = ${workspaceId}
   `;
   const row = rows[0];
   if (!row) {
     // The schema seeds this row; if it is gone, say so rather than inventing a
     // timezone and silently computing every day boundary in the wrong place.
-    throw new Error('settings row is missing: active_tz and buffer_ratio are unknown');
+    throw new Error(
+      `settings row is missing for workspace ${workspaceId}: active_tz and buffer_ratio are unknown`,
+    );
   }
   return {
     active_tz: row.active_tz,
@@ -97,9 +124,9 @@ export async function loadSettings(sql: Sql): Promise<Settings> {
   };
 }
 
-/** "Today" in active_tz, resolved by the database (D2). */
-export async function today(sql: Sql): Promise<string> {
-  const rows = await sql<Array<{ d: string }>>`select taskos_today()::text as d`;
+/** "Today" in this workspace's active_tz, resolved by the database (D2). */
+export async function today(sql: Sql, workspaceId: string): Promise<string> {
+  const rows = await sql<Array<{ d: string }>>`select taskos_today(${workspaceId})::text as d`;
   const d = rows[0]?.d;
   if (!d) throw new Error('taskos_today() returned nothing');
   return d;

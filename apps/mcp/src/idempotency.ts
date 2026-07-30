@@ -20,11 +20,17 @@ export interface Replay {
 export async function findReplay(
   sql: Sql,
   key: string | undefined,
+  workspaceId?: string,
 ): Promise<Replay | null> {
   if (!key) return null;
-  const rows = await sql<Array<{ payload: { result?: unknown }; at: Date }>>`
-    select payload, at from events where idempotency_key = ${key} limit 1
-  `;
+  // Scoped by workspace where one is known: keys are globally unique, so an
+  // unscoped lookup would let one tenant learn that another had used a key.
+  const rows = workspaceId
+    ? await sql<Array<{ payload: { result?: unknown }; at: Date }>>`
+        select payload, at from events
+         where idempotency_key = ${key} and workspace_id = ${workspaceId} limit 1`
+    : await sql<Array<{ payload: { result?: unknown }; at: Date }>>`
+        select payload, at from events where idempotency_key = ${key} limit 1`;
   const row = rows[0];
   if (!row) return null;
   return {
@@ -49,13 +55,15 @@ export async function recordReceipt(
     verb: string;
     task_id?: string | null;
     venture_id?: string | null;
+    workspace_id?: string | null;
     result: unknown;
   },
 ): Promise<void> {
   await sql`
-    insert into events (actor, verb, task_id, venture_id, payload, idempotency_key)
+    insert into events (actor, verb, task_id, venture_id, workspace_id, payload, idempotency_key)
     values (
       ${opts.actor}, ${opts.verb}, ${opts.task_id ?? null}, ${opts.venture_id ?? null},
+      ${opts.workspace_id ?? null},
       ${sql.json({ result: opts.result } as never)}, ${opts.key ?? null}
     )
   `;
