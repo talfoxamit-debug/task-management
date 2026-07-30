@@ -1,15 +1,13 @@
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
-import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { createServer, type Server } from 'node:http';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { checkCredential } from '../src/auth.js';
-import { buildServer } from '../src/mcp-server.js';
+import entrypoint from '../src/server.js';
 import { freshDb, type TestDb } from './harness.js';
 
 /**
- * The endpoint over real HTTP, with real bearer auth — the same handler shape
- * api/mcp.ts serves on Vercel. This is the step 9 verification, run locally
+ * The endpoint over real HTTP, driving THE SAME default export Vercel invokes
+ * (src/server.ts). This is the step 9 verification, run locally
  * first: if capacity() cannot be reached over HTTP with a token here, it will
  * not work from a connector either.
  */
@@ -24,35 +22,8 @@ beforeAll(async () => {
   db = await freshDb('http');
   process.env['TASKOS_TOKEN'] = TOKEN;
 
-  httpServer = createServer(async (req, res) => {
-    if (!(req.url ?? '').startsWith('/api/mcp')) {
-      res.statusCode = 404;
-      res.end('not found');
-      return;
-    }
-    const auth = checkCredential(req.headers['authorization'], req.url);
-    if (!auth.ok) {
-      res.statusCode = auth.status;
-      res.setHeader('content-type', 'application/json');
-      res.end(
-        JSON.stringify({ jsonrpc: '2.0', error: { code: -32001, message: auth.message }, id: null }),
-      );
-      return;
-    }
-    if (req.method !== 'POST') {
-      res.statusCode = 405;
-      res.setHeader('allow', 'POST');
-      res.end(JSON.stringify({ jsonrpc: '2.0', error: { code: -32000, message: 'use POST' }, id: null }));
-      return;
-    }
-    const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
-    const server = buildServer(db.sql);
-    res.on('close', () => {
-      void transport.close();
-      void server.close();
-    });
-    await server.connect(transport);
-    await transport.handleRequest(req, res);
+  httpServer = createServer((req, res) => {
+    void entrypoint(req, res);
   });
 
   await new Promise<void>((resolve) => httpServer.listen(0, '127.0.0.1', resolve));
@@ -121,6 +92,17 @@ describe('the endpoint refuses unauthenticated callers', () => {
       body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }),
     });
     expect(res.status).toBe(401);
+  });
+
+  it('routes only /api/mcp, and answers /health without a credential', async () => {
+    const base = url.replace('/api/mcp', '');
+    const health = await fetch(`${base}/health`);
+    expect(health.status).toBe(200);
+    expect(await health.json()).toEqual({ ok: true, service: 'taskos-mcp' });
+
+    const missing = await fetch(`${base}/`);
+    expect(missing.status).toBe(404);
+    expect((await missing.json() as { hint: string }).hint).toContain('/api/mcp');
   });
 
   it('rejects GET, since there is no session to resume', async () => {
