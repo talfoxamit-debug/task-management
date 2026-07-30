@@ -22,6 +22,27 @@ import mcp from './handler.js';
 
 const MCP_PATH = '/api/mcp';
 
+/**
+ * Which of the two failure modes is in play, and nothing more.
+ *
+ *   not_configured — DATABASE_URL is absent or unparseable
+ *   unreachable    — it is set, but the database did not answer
+ *   connected      — a trivial query succeeded
+ *
+ * The underlying error is deliberately NOT returned: postgres.js messages can
+ * carry the host, and sometimes the user, from the connection string.
+ */
+async function databaseStatus(): Promise<'connected' | 'unreachable' | 'not_configured'> {
+  if (!process.env['DATABASE_URL'] && !process.env['POSTGRES_URL']) return 'not_configured';
+  try {
+    const { getSql } = await import('./db.js');
+    await getSql()`select 1`;
+    return 'connected';
+  } catch {
+    return 'unreachable';
+  }
+}
+
 function json(res: ServerResponse, status: number, body: unknown): void {
   res.statusCode = status;
   res.setHeader('content-type', 'application/json');
@@ -39,11 +60,21 @@ export default async function server(
     return;
   }
 
-  // Unauthenticated liveness check. Deliberately says nothing about the data,
-  // the token, or the database — only that the deployment is running, which is
-  // the one thing worth being able to check without a credential.
+  // Unauthenticated liveness check.
+  //
+  // It reports whether configuration is PRESENT and whether the database
+  // answers, never what any of it is: no hostnames, no connection strings, no
+  // error text, and nothing at all about the token's value. That is enough to
+  // tell a missing DATABASE_URL apart from an unreachable one — the difference
+  // between the two 500s this endpoint exists to diagnose — without a
+  // credential, and without handing a stranger anything they can use.
   if (path === '/health') {
-    json(res, 200, { ok: true, service: 'taskos-mcp' });
+    json(res, 200, {
+      ok: true,
+      service: 'taskos-mcp',
+      tokenConfigured: Boolean(process.env['TASKOS_TOKEN']),
+      database: await databaseStatus(),
+    });
     return;
   }
 

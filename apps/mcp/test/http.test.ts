@@ -98,7 +98,16 @@ describe('the endpoint refuses unauthenticated callers', () => {
     const base = url.replace('/api/mcp', '');
     const health = await fetch(`${base}/health`);
     expect(health.status).toBe(200);
-    expect(await health.json()).toEqual({ ok: true, service: 'taskos-mcp' });
+    const body = (await health.json()) as Record<string, unknown>;
+    expect(body['ok']).toBe(true);
+    expect(body['service']).toBe('taskos-mcp');
+    expect(body['tokenConfigured']).toBe(true);
+    expect(body['database']).toBe('connected');
+    // It must never leak the connection string, the host or the token.
+    const text = JSON.stringify(body);
+    expect(text).not.toContain(TOKEN);
+    expect(text).not.toContain('postgres');
+    expect(text).not.toContain('5433');
 
     const missing = await fetch(`${base}/`);
     expect(missing.status).toBe(404);
