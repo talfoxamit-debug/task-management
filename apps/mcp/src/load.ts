@@ -39,32 +39,56 @@ function num(v: unknown): number {
   return typeof v === 'number' ? v : Number(v);
 }
 
+
+/**
+ * Run query thunks one at a time, in order.
+ *
+ * Concurrency against a transaction-mode pooler is the failure this exists to
+ * prevent; see the note at the call site.
+ */
+async function sequentially<T extends readonly (() => Promise<unknown>)[]>(
+  thunks: T,
+): Promise<{ -readonly [K in keyof T]: Awaited<ReturnType<T[K]>> }> {
+  const out: unknown[] = [];
+  for (const thunk of thunks) out.push(await thunk());
+  return out as { -readonly [K in keyof T]: Awaited<ReturnType<T[K]>> };
+}
+
 export async function loadPortfolio(sql: Sql): Promise<Portfolio> {
   const settings = await loadSettings(sql);
   const todayStr = await dbToday(sql);
 
+  // SEQUENTIAL, not Promise.all.
+  //
+  // These ten reads used to run concurrently. postgres.js pipelines concurrent
+  // queries onto one connection, and Supabase's transaction-mode pooler routes
+  // each statement to a backend independently, so the pipeline stalls and the
+  // request never returns: capacity() hung until the client gave up, while
+  // /health kept working because a single `select 1` has nothing to interleave
+  // with. Ten sequential round trips cost a few hundred milliseconds and cannot
+  // deadlock. Do not "optimise" this back into a Promise.all.
   const [ventures, milestones, outcomeTargets, outcomeMilestones, projects, people, tasks, deps, calibration, firstEvent] =
-    await Promise.all([
-      sql<Array<Record<string, unknown>>>`
+    await sequentially([
+      () => sql<Array<Record<string, unknown>>>`
         select id, name, slug, strategic_weight, floor_share, ceiling_share,
                attention_debt_hours, current_bottleneck, active
           from ventures order by slug`,
-      sql<Array<Record<string, unknown>>>`
+      () => sql<Array<Record<string, unknown>>>`
         select id, venture_id, name, due_date::text as due_date, hardness,
                cost_of_slip, status
           from milestones order by due_date, name`,
-      sql<Array<Record<string, unknown>>>`
+      () => sql<Array<Record<string, unknown>>>`
         select id, venture_id, name, target_date::text as target_date, status,
                indicator_config
           from outcome_targets order by name`,
-      sql<Array<Record<string, unknown>>>`
+      () => sql<Array<Record<string, unknown>>>`
         select outcome_id, milestone_id from outcome_milestones`,
-      sql<Array<Record<string, unknown>>>`
+      () => sql<Array<Record<string, unknown>>>`
         select id, venture_id, milestone_id, name, outcome, status,
                last_movement_at
           from projects order by name`,
-      sql<Array<Record<string, unknown>>>`select id, name, role from people order by name`,
-      sql<Array<Record<string, unknown>>>`
+      () => sql<Array<Record<string, unknown>>>`select id, name, role from people order by name`,
+      () => sql<Array<Record<string, unknown>>>`
         select id, project_id, venture_id, milestone_id, title, notes,
                criticality, context, energy, estimate_minutes, actual_minutes,
                actual_inferred, value, deadline_date::text as deadline_date,
@@ -77,11 +101,11 @@ export async function loadPortfolio(sql: Sql): Promise<Portfolio> {
          where status not in ('done','killed')
             or closed_at > now() - interval '30 days'
          order by created_at`,
-      sql<Array<Record<string, unknown>>>`
+      () => sql<Array<Record<string, unknown>>>`
         select task_id, blocks_task_id from task_dependencies`,
-      sql<Array<Record<string, unknown>>>`select context, ratio, sample_n from calibration`,
-      sql<Array<{ at: Date }>>`select min(at) as at from events`,
-    ]);
+      () => sql<Array<Record<string, unknown>>>`select context, ratio, sample_n from calibration`,
+      () => sql<Array<{ at: Date }>>`select min(at) as at from events`,
+    ] as const);
 
   const firstAt = firstEvent[0]?.at ?? null;
 
