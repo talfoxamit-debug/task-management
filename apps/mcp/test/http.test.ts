@@ -85,7 +85,7 @@ describe('the endpoint refuses unauthenticated callers', () => {
     });
     expect(res.status).toBe(401);
     expect(res.headers.get('www-authenticate')).toBe('Bearer');
-    const body = await res.json();
+    const body = (await res.json()) as { error: { message: string } };
     expect(body.error.message).toContain('missing Authorization');
   });
 

@@ -30,6 +30,21 @@ export function getSql(): Sql {
     );
   }
 
+  // Supabase (and every other hosted Postgres) requires TLS, but postgres.js
+  // only enables it when the connection string asks for it. A pasted Supabase
+  // URL has no sslmode parameter, so without this the first query fails with a
+  // bare "connection closed" that says nothing about certificates. Local
+  // development databases are left alone.
+  const host = (() => {
+    try {
+      return new URL(url).hostname;
+    } catch {
+      return '';
+    }
+  })();
+  const isLocal = host === 'localhost' || host === '127.0.0.1' || host === '::1' || host === '';
+  const urlDeclaresSsl = /[?&]sslmode=/.test(url);
+
   handle = postgres(url, {
     // Serverless: one connection per invocation, released promptly. The Supabase
     // transaction pooler cannot use prepared statements.
@@ -37,6 +52,7 @@ export function getSql(): Sql {
     idle_timeout: 20,
     connect_timeout: 10,
     prepare: false,
+    ...(isLocal || urlDeclaresSsl ? {} : { ssl: 'require' as const }),
     // Return dates as `YYYY-MM-DD` strings rather than JS Date objects. The
     // engine's contract is calendar dates in active_tz, and a Date here would
     // silently re-introduce the timezone shift D2 exists to prevent.
