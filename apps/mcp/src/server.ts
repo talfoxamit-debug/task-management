@@ -22,24 +22,51 @@ import mcp from './handler.js';
 
 const MCP_PATH = '/api/mcp';
 
+export type DatabaseStatus =
+  | 'connected'
+  | 'not_configured'
+  | 'authentication_failed'
+  | 'host_not_found'
+  | 'connection_refused'
+  | 'timed_out'
+  | 'database_missing'
+  | 'unreachable';
+
 /**
- * Which of the two failure modes is in play, and nothing more.
+ * Which failure mode is in play, and nothing more.
  *
- *   not_configured — DATABASE_URL is absent or unparseable
- *   unreachable    — it is set, but the database did not answer
- *   connected      — a trivial query succeeded
- *
- * The underlying error is deliberately NOT returned: postgres.js messages can
- * carry the host, and sometimes the user, from the connection string.
+ * The classification is deliberately coarse and derived from error CODES, never
+ * from error text: postgres.js messages can carry the host and the username from
+ * the connection string, so no message is ever returned or logged from here.
+ * Knowing "the password is wrong" versus "that hostname does not resolve" is the
+ * difference between a two-minute fix and an afternoon, and neither answer tells
+ * a stranger anything they could not learn by trying to connect themselves.
  */
-async function databaseStatus(): Promise<'connected' | 'unreachable' | 'not_configured'> {
+async function databaseStatus(): Promise<DatabaseStatus> {
   if (!process.env['DATABASE_URL'] && !process.env['POSTGRES_URL']) return 'not_configured';
   try {
     const { getSql } = await import('./db.js');
     await getSql()`select 1`;
     return 'connected';
-  } catch {
-    return 'unreachable';
+  } catch (e) {
+    const code = String((e as { code?: string })?.code ?? '');
+    switch (code) {
+      case '28P01': // invalid_password
+      case '28000': // invalid_authorization_specification
+        return 'authentication_failed';
+      case '3D000': // invalid_catalog_name
+        return 'database_missing';
+      case 'ENOTFOUND':
+      case 'EAI_AGAIN':
+        return 'host_not_found';
+      case 'ECONNREFUSED':
+        return 'connection_refused';
+      case 'ETIMEDOUT':
+      case 'CONNECT_TIMEOUT':
+        return 'timed_out';
+      default:
+        return 'unreachable';
+    }
   }
 }
 
