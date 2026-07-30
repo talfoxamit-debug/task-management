@@ -104,3 +104,45 @@ export async function today(sql: Sql): Promise<string> {
   if (!d) throw new Error('taskos_today() returned nothing');
   return d;
 }
+
+/**
+ * Run `work` with a hard deadline, turning a hang into a named error.
+ *
+ * A serverless function that hangs is the worst thing to debug: the platform
+ * logs nothing on completion because the request never completes, so the only
+ * evidence is a client timeout minutes later with no indication of which step
+ * stalled. Every database stage in a tool goes through this, so a stall reports
+ * itself as "stage X did not finish in Nms" instead of vanishing.
+ */
+export async function withDeadline<T>(
+  label: string,
+  ms: number,
+  work: () => Promise<T>,
+): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`${label} did not finish within ${ms}ms`)), ms);
+  });
+  try {
+    return await Promise.race([work(), deadline]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+/** Time a stage and log it, so the runtime logs show where the time went. */
+export async function timed<T>(label: string, ms: number, work: () => Promise<T>): Promise<T> {
+  const started = Date.now();
+  try {
+    const result = await withDeadline(label, ms, work);
+    console.log(`[taskos] ${label} ok in ${Date.now() - started}ms`);
+    return result;
+  } catch (e) {
+    console.log(
+      `[taskos] ${label} FAILED after ${Date.now() - started}ms: ${
+        e instanceof Error ? e.message : String(e)
+      }`,
+    );
+    throw e;
+  }
+}

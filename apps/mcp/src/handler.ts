@@ -1,7 +1,7 @@
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { checkCredential } from './auth.js';
-import { getSql } from './db.js';
+import { getSql, withDeadline } from './db.js';
 import { buildServer } from './mcp-server.js';
 
 /**
@@ -76,7 +76,11 @@ export default async function handler(
     });
 
     await server.connect(transport);
-    await transport.handleRequest(req, res, req.body);
+    // A last-resort ceiling below the platform's own limit, so a stall becomes a
+    // readable JSON error rather than a request that never returns.
+    await withDeadline('mcp.request', 45_000, () =>
+      transport.handleRequest(req, res, req.body),
+    );
   } catch (e) {
     // Without this, an unreachable database or a malformed DATABASE_URL throws
     // out of the handler and Vercel answers with a generic crash page that says

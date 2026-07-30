@@ -1,6 +1,6 @@
 import type { Confidence, Task } from '@taskos/engine';
 import { daysBetween } from '@taskos/engine';
-import type { Sql } from './db.js';
+import { timed, type Sql } from './db.js';
 import { loadPortfolio, type Portfolio } from './load.js';
 import { findReplay, isCycleRejection, isUniqueViolation, recordReceipt } from './idempotency.js';
 import { envelope, LIST_CAP, narrow, plainConfidence, r1, r3, type ToolEnvelope } from './narrow.js';
@@ -637,12 +637,16 @@ export async function capacity(
   sql: Sql,
   input: { available_hours: number },
 ): Promise<ToolEnvelope> {
-  // Expire anything past due before computing, so a stale 'active' milestone
-  // cannot keep drawing demand from a date that has gone.
-  const expired = await sql<Array<{ n: number }>>`select taskos_expire_milestones() as n`;
+  // Every database stage is timed and deadlined. capacity() is the tool most
+  // likely to stall - it runs a function, then a dozen reads - and a stall here
+  // is invisible without this: the platform logs nothing for a request that
+  // never finishes.
+  const expired = await timed('capacity.expire_milestones', 10_000, () =>
+    sql<Array<{ n: number }>>`select taskos_expire_milestones() as n`,
+  );
   const expiredCount = Number(expired[0]?.n ?? 0);
 
-  const portfolio = await loadPortfolio(sql);
+  const portfolio = await timed('capacity.load_portfolio', 15_000, () => loadPortfolio(sql));
   const pipeline = runEngine(portfolio);
   const result = runCapacity(portfolio, pipeline, input.available_hours);
 
