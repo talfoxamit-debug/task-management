@@ -1,6 +1,6 @@
 import { createServer } from 'node:http';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
-import { checkBearer } from './auth.js';
+import { checkCredential } from './auth.js';
 import { getSql } from './db.js';
 import { buildServer } from './server.js';
 
@@ -14,17 +14,16 @@ import { buildServer } from './server.js';
 const port = Number(process.env['PORT'] ?? 3939);
 
 createServer(async (req, res) => {
-  if (req.url !== '/api/mcp') {
+  if (!(req.url ?? '').startsWith('/api/mcp')) {
     res.statusCode = 404;
     res.end('not found');
     return;
   }
 
-  const auth = checkBearer(req.headers['authorization']);
+  const auth = checkCredential(req.headers['authorization'], req.url);
   if (!auth.ok) {
     res.statusCode = auth.status;
     res.setHeader('content-type', 'application/json');
-    if (auth.status === 401) res.setHeader('www-authenticate', 'Bearer');
     res.end(
       JSON.stringify({ jsonrpc: '2.0', error: { code: -32001, message: auth.message }, id: null }),
     );

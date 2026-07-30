@@ -14,5 +14,5 @@
       "@taskos/engine": ["../../packages/engine/src/index.ts"]
     }
   },
-  "include": ["src", "api", "test"]
+  "include": ["src", "test", "../../api"]
 }

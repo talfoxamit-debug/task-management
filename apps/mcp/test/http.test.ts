@@ -3,7 +3,7 @@ import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { createServer, type Server } from 'node:http';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { checkBearer } from '../src/auth.js';
+import { checkCredential } from '../src/auth.js';
 import { buildServer } from '../src/server.js';
 import { freshDb, type TestDb } from './harness.js';
 
@@ -25,16 +25,15 @@ beforeAll(async () => {
   process.env['TASKOS_TOKEN'] = TOKEN;
 
   httpServer = createServer(async (req, res) => {
-    if (req.url !== '/api/mcp') {
+    if (!(req.url ?? '').startsWith('/api/mcp')) {
       res.statusCode = 404;
       res.end('not found');
       return;
     }
-    const auth = checkBearer(req.headers['authorization']);
+    const auth = checkCredential(req.headers['authorization'], req.url);
     if (!auth.ok) {
       res.statusCode = auth.status;
       res.setHeader('content-type', 'application/json');
-      if (auth.status === 401) res.setHeader('www-authenticate', 'Bearer');
       res.end(
         JSON.stringify({ jsonrpc: '2.0', error: { code: -32001, message: auth.message }, id: null }),
       );
@@ -84,9 +83,11 @@ describe('the endpoint refuses unauthenticated callers', () => {
       body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }),
     });
     expect(res.status).toBe(401);
-    expect(res.headers.get('www-authenticate')).toBe('Bearer');
+    // Deliberately NO www-authenticate: it makes MCP clients start OAuth
+    // discovery, which this server does not implement.
+    expect(res.headers.get('www-authenticate')).toBeNull();
     const body = (await res.json()) as { error: { message: string } };
-    expect(body.error.message).toContain('missing Authorization');
+    expect(body.error.message).toContain('no token');
   });
 
   it('rejects a wrong token', async () => {
@@ -97,6 +98,26 @@ describe('the endpoint refuses unauthenticated callers', () => {
         accept: 'application/json, text/event-stream',
         authorization: 'Bearer not-the-token',
       },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }),
+    });
+    expect(res.status).toBe(401);
+  });
+
+  it('accepts the token from the query string, for connectors with no header field', async () => {
+    // The claude.ai custom-connector form has no static-bearer field, so the
+    // credential has to be able to travel in the URL.
+    const res = await fetch(`${url}?token=${encodeURIComponent(TOKEN)}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', accept: 'application/json, text/event-stream' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }),
+    });
+    expect(res.status).toBe(200);
+  });
+
+  it('rejects a wrong token in the query string', async () => {
+    const res = await fetch(`${url}?token=nope`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', accept: 'application/json, text/event-stream' },
       body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }),
     });
     expect(res.status).toBe(401);

@@ -95,8 +95,14 @@ rejected with a 500. An unset secret never means "allow everyone".
 
 ### 3. Vercel
 
+The function lives at the repository root, `api/mcp.ts`, and `vercel.json` sits
+beside it. **Leave the project's Root Directory at the repository root.** Vercel
+resolves functions relative to the Root Directory and reads only the
+`vercel.json` found there; a function nested under `apps/mcp/api` is invisible to
+it, and it will pick its own entrypoints from whatever TypeScript it can see —
+which fails with `Invalid export found in module .../src/server.mjs`.
+
 ```bash
-cd apps/mcp
 vercel link
 vercel env add TASKOS_TOKEN production
 vercel env add DATABASE_URL production
@@ -111,8 +117,20 @@ session id pointing at a dead lambda is worse than no session at all.
 
 In claude.ai → Settings → Connectors → Add custom connector:
 
-- URL: `https://<deployment>/api/mcp`
-- Authentication: Bearer token, the value of `TASKOS_TOKEN`
+- URL: `https://<deployment>/api/mcp?token=<TASKOS_TOKEN>`
+- Authentication: none (the token is in the URL)
+
+The token can travel in the URL **or** in an `Authorization: Bearer` header; the
+server accepts either. The URL form exists because the claude.ai custom-connector
+form has no field for a static bearer token. That is a genuine tradeoff — URLs
+are logged and kept in history in a way headers are not — so treat the connector
+URL as the secret it is, and rotate by changing `TASKOS_TOKEN` and
+re-registering.
+
+A 401 from this server deliberately omits `WWW-Authenticate: Bearer`. That header
+is correct HTTP, but an MCP client reads it as an invitation to start OAuth
+discovery and then fails with "Couldn't register with the sign-in service". This
+server implements no OAuth, so it must not advertise one.
 
 This step is done in your account and cannot be scripted from here.
 

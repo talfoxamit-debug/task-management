@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { checkBearer } from '../src/auth.js';
+import { checkBearer, checkCredential } from '../src/auth.js';
 import type { Sql } from '../src/db.js';
 import {
   capacity,
