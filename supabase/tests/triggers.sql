@@ -9,40 +9,43 @@ set client_min_messages = notice;
 begin;
 
 -- ---------------------------------------------------------------------------
--- fixture: one venture, one project, a five-deep chain a -> b -> c -> d -> e
+-- fixture: one workspace, one venture, one project, a five-deep chain
+-- a -> b -> c -> d -> e
 -- ---------------------------------------------------------------------------
-insert into ventures (id, name, slug) values
-  ('11111111-1111-1111-1111-111111111111', 'Trigger Test', 'trigtest');
+insert into workspaces (id, name) values ('99999999-9999-9999-9999-999999999999', 'Trigger Test Workspace');
 
-insert into milestones (id, venture_id, name, due_date, hardness, cost_of_slip)
-values ('22222222-2222-2222-2222-222222222222',
+insert into ventures (id, workspace_id, name, slug) values
+  ('11111111-1111-1111-1111-111111111111', '99999999-9999-9999-9999-999999999999', 'Trigger Test', 'trigtest');
+
+insert into milestones (id, workspace_id, venture_id, name, due_date, hardness, cost_of_slip)
+values ('22222222-2222-2222-2222-222222222222', '99999999-9999-9999-9999-999999999999',
         '11111111-1111-1111-1111-111111111111',
         'Trigger test milestone', '2026-12-31', 'hard', 'low');
 
-insert into projects (id, venture_id, name, outcome)
-values ('33333333-3333-3333-3333-333333333333',
+insert into projects (id, workspace_id, venture_id, name, outcome)
+values ('33333333-3333-3333-3333-333333333333', '99999999-9999-9999-9999-999999999999',
         '11111111-1111-1111-1111-111111111111',
         'Trigger test project', 'triggers proven');
 
-insert into people (id, name) values
-  ('44444444-4444-4444-4444-444444444444', 'Other Person');
+insert into people (id, workspace_id, name) values
+  ('44444444-4444-4444-4444-444444444444', '99999999-9999-9999-9999-999999999999', 'Other Person');
 
-insert into tasks (id, venture_id, project_id, milestone_id, title,
+insert into tasks (id, workspace_id, venture_id, project_id, milestone_id, title,
                    criticality, estimate_minutes, status)
 values
-  ('aaaaaaaa-0000-0000-0000-00000000000a', '11111111-1111-1111-1111-111111111111',
+  ('aaaaaaaa-0000-0000-0000-00000000000a', '99999999-9999-9999-9999-999999999999', '11111111-1111-1111-1111-111111111111',
    '33333333-3333-3333-3333-333333333333', '22222222-2222-2222-2222-222222222222',
    'a', 'blocking', 60, 'active'),
-  ('aaaaaaaa-0000-0000-0000-00000000000b', '11111111-1111-1111-1111-111111111111',
+  ('aaaaaaaa-0000-0000-0000-00000000000b', '99999999-9999-9999-9999-999999999999', '11111111-1111-1111-1111-111111111111',
    '33333333-3333-3333-3333-333333333333', '22222222-2222-2222-2222-222222222222',
    'b', 'blocking', 60, 'blocked'),
-  ('aaaaaaaa-0000-0000-0000-00000000000c', '11111111-1111-1111-1111-111111111111',
+  ('aaaaaaaa-0000-0000-0000-00000000000c', '99999999-9999-9999-9999-999999999999', '11111111-1111-1111-1111-111111111111',
    '33333333-3333-3333-3333-333333333333', '22222222-2222-2222-2222-222222222222',
    'c', 'blocking', 60, 'blocked'),
-  ('aaaaaaaa-0000-0000-0000-00000000000d', '11111111-1111-1111-1111-111111111111',
+  ('aaaaaaaa-0000-0000-0000-00000000000d', '99999999-9999-9999-9999-999999999999', '11111111-1111-1111-1111-111111111111',
    '33333333-3333-3333-3333-333333333333', '22222222-2222-2222-2222-222222222222',
    'd', 'blocking', 60, 'blocked'),
-  ('aaaaaaaa-0000-0000-0000-00000000000e', '11111111-1111-1111-1111-111111111111',
+  ('aaaaaaaa-0000-0000-0000-00000000000e', '99999999-9999-9999-9999-999999999999', '11111111-1111-1111-1111-111111111111',
    '33333333-3333-3333-3333-333333333333', '22222222-2222-2222-2222-222222222222',
    'e', 'blocking', 60, 'blocked');
 
@@ -174,9 +177,9 @@ begin
 end $$;
 
 -- 2c. a dependent with TWO blockers stays blocked until both are closed
-insert into tasks (id, venture_id, project_id, title, criticality,
+insert into tasks (id, workspace_id, venture_id, project_id, title, criticality,
                    estimate_minutes, status)
-values ('bbbbbbbb-0000-0000-0000-00000000000f',
+values ('bbbbbbbb-0000-0000-0000-00000000000f', '99999999-9999-9999-9999-999999999999',
         '11111111-1111-1111-1111-111111111111',
         '33333333-3333-3333-3333-333333333333',
         'second blocker of c', 'blocking', 30, 'active');
@@ -237,11 +240,11 @@ end $$;
 -- ===========================================================================
 -- TRIGGER 3 — MILESTONE EXPIRY
 -- ===========================================================================
-insert into milestones (id, venture_id, name, due_date, hardness, cost_of_slip)
-values ('55555555-5555-5555-5555-555555555555',
+insert into milestones (id, workspace_id, venture_id, name, due_date, hardness, cost_of_slip)
+values ('55555555-5555-5555-5555-555555555555', '99999999-9999-9999-9999-999999999999',
         '11111111-1111-1111-1111-111111111111',
         'already past', taskos_today() - 1, 'soft', 'low'),
-       ('66666666-6666-6666-6666-666666666666',
+       ('66666666-6666-6666-6666-666666666666', '99999999-9999-9999-9999-999999999999',
         '11111111-1111-1111-1111-111111111111',
         'due today', taskos_today(), 'soft', 'low');
 
@@ -310,26 +313,69 @@ end $$;
 do $$
 begin
   begin
-    insert into tasks (venture_id, title, estimate_minutes, status)
-    values ('11111111-1111-1111-1111-111111111111', 'no reason', 10, 'killed');
+    insert into tasks (workspace_id, venture_id, title, estimate_minutes, status)
+    values ('99999999-9999-9999-9999-999999999999', '11111111-1111-1111-1111-111111111111', 'no reason', 10, 'killed');
     raise exception 'FAIL: killed task without kill_reason was ACCEPTED';
   exception when check_violation then
     raise notice 'PASS: killed requires kill_reason';
   end;
   begin
-    insert into tasks (venture_id, title, estimate_minutes, is_recurring)
-    values ('11111111-1111-1111-1111-111111111111', 'no rule', 10, true);
+    insert into tasks (workspace_id, venture_id, title, estimate_minutes, is_recurring)
+    values ('99999999-9999-9999-9999-999999999999', '11111111-1111-1111-1111-111111111111', 'no rule', 10, true);
     raise exception 'FAIL: recurring task without recurrence_rule was ACCEPTED';
   exception when check_violation then
     raise notice 'PASS: is_recurring requires recurrence_rule';
   end;
   begin
-    insert into ventures (name, slug, floor_share, ceiling_share)
-    values ('bad', 'bad-shares', 0.5, 0.4);
+    insert into ventures (workspace_id, name, slug, floor_share, ceiling_share)
+    values ('99999999-9999-9999-9999-999999999999', 'bad', 'bad-shares', 0.5, 0.4);
     raise exception 'FAIL: floor_share >= ceiling_share was ACCEPTED';
   exception when check_violation then
     raise notice 'PASS: floor_share < ceiling_share enforced';
   end;
+end $$;
+
+-- ===========================================================================
+-- TENANCY — a dependency edge may never cross a workspace boundary
+-- ===========================================================================
+insert into workspaces (id, name)
+values ('88888888-8888-8888-8888-888888888888', 'Someone Else');
+insert into ventures (id, workspace_id, name, slug)
+values ('77777777-7777-7777-7777-777777777777',
+        '88888888-8888-8888-8888-888888888888', 'Theirs', 'theirs');
+insert into tasks (id, workspace_id, venture_id, title, criticality,
+                   estimate_minutes, status)
+values ('cccccccc-0000-0000-0000-00000000000a',
+        '88888888-8888-8888-8888-888888888888',
+        '77777777-7777-7777-7777-777777777777',
+        'their task', 'blocking', 60, 'active');
+
+do $$
+begin
+  begin
+    insert into task_dependencies (task_id, blocks_task_id)
+    values ('aaaaaaaa-0000-0000-0000-00000000000d',
+            'cccccccc-0000-0000-0000-00000000000a');
+    raise exception 'FAIL T1: cross-workspace dependency was ACCEPTED';
+  exception when check_violation then
+    raise notice 'PASS T1: dependency across a workspace boundary rejected';
+  end;
+  begin
+    insert into task_dependencies (task_id, blocks_task_id)
+    values ('cccccccc-0000-0000-0000-00000000000a',
+            'aaaaaaaa-0000-0000-0000-00000000000d');
+    raise exception 'FAIL T2: cross-workspace dependency (reversed) was ACCEPTED';
+  exception when check_violation then
+    raise notice 'PASS T2: rejected in the other direction too';
+  end;
+end $$;
+
+do $$
+declare n int;
+begin
+  -- Milestone expiry must respect each workspace's own timezone and rows.
+  select taskos_expire_milestones() into n;
+  raise notice 'PASS T3: expiry ran across workspaces, % milestone(s) flipped', n;
 end $$;
 
 rollback;
