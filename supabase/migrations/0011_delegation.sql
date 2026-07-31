@@ -49,7 +49,14 @@ create table if not exists delegation_tokens (
   -- The rotation grace window: during it both links work and the old page
   -- carries a banner with the new URL. Naive rotation locks people out, so
   -- nobody ever rotates; this makes rotating routine.
-  superseded_by  uuid references delegation_tokens(id) on delete set null,
+  --
+  -- DEFERRABLE INITIALLY DEFERRED, and that is required rather than tidy. The
+  -- partial unique index below forbids two live links for one person, so a
+  -- rotation must mark the old row superseded BEFORE inserting the new one --
+  -- which means pointing at a row that does not exist yet. Deferring the
+  -- foreign key to commit time is what lets both happen in one transaction.
+  superseded_by  uuid references delegation_tokens(id) on delete set null
+                 deferrable initially deferred,
 
   -- Stamped on GET, and NEVER reported as "they read it": WhatsApp, Telegram
   -- and Slack all fetch a URL to build a link preview.
@@ -127,9 +134,20 @@ comment on column people.timezone is
 -- ---------------------------------------------------------------------------
 -- Cross-workspace guard, the same one 0007 puts on documents
 -- ---------------------------------------------------------------------------
+-- One function, two tables with different columns, so the optional person
+-- columns are read through jsonb rather than as new.<field>.
+--
+-- plpgsql resolves a record field reference at RUNTIME even inside a branch
+-- that is not taken, so `if to_jsonb(new) ? 'author_person_id' and
+-- new.author_person_id is not null` still raises "record new has no field
+-- author_person_id" on delegation_tokens. Reading the value out of the jsonb
+-- is the only form that works for both tables.
 create or replace function taskos_delegation_same_workspace() returns trigger
 language plpgsql as $$
-declare other uuid;
+declare
+  j jsonb := to_jsonb(new);
+  other uuid;
+  who uuid;
 begin
   if new.task_id is not null then
     select workspace_id into other from tasks where id = new.task_id;
@@ -138,20 +156,20 @@ begin
         new.workspace_id, other using errcode = '23514';
     end if;
   end if;
-  if to_jsonb(new) ? 'person_id' and new.person_id is not null then
-    select workspace_id into other from people where id = new.person_id;
-    if other is distinct from new.workspace_id then
-      raise exception 'row workspace % does not match person workspace %',
-        new.workspace_id, other using errcode = '23514';
+
+  foreach who in array array[
+    nullif(j->>'person_id', '')::uuid,
+    nullif(j->>'author_person_id', '')::uuid
+  ] loop
+    if who is not null then
+      select workspace_id into other from people where id = who;
+      if other is distinct from new.workspace_id then
+        raise exception 'row workspace % does not match person workspace %',
+          new.workspace_id, other using errcode = '23514';
+      end if;
     end if;
-  end if;
-  if to_jsonb(new) ? 'author_person_id' and new.author_person_id is not null then
-    select workspace_id into other from people where id = new.author_person_id;
-    if other is distinct from new.workspace_id then
-      raise exception 'row workspace % does not match author workspace %',
-        new.workspace_id, other using errcode = '23514';
-    end if;
-  end if;
+  end loop;
+
   return new;
 end $$;
 
