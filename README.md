@@ -218,6 +218,56 @@ reference another workspace's venture, project, milestone or task, and its
 `storage_path` must begin with its own workspace id — which is what the bucket
 policy authorises on.
 
+## Telegram
+
+Capture from your phone. `POST /api/telegram` on the same server.
+
+It does three things — capture text to the inbox verbatim, store a photo or file
+against your work, and answer `/capacity 25`. Deliberately nothing else:
+anything needing judgement (which venture, what estimate, what blocks what)
+stays in the Claude conversation, because that is where judgement is. A bot that
+parsed "urgent yachtyhub thing by friday" into fields would be guessing, and the
+inbox stops being trustworthy the moment it guesses.
+
+**Two independent gates, both required.** A Telegram bot answers whoever finds
+it, so:
+
+1. `TELEGRAM_WEBHOOK_SECRET` — Telegram echoes it in a header, proving the
+   request came from Telegram and not from someone who guessed the URL.
+2. `TELEGRAM_ALLOWED_CHAT_IDS` — a comma-separated list of chat ids. Anything
+   else is dropped in silence, without a reply: telling a stranger the bot
+   exists and rejected them is more than they need.
+
+An empty allow-list means *nobody*, and the server refuses to start the bridge
+rather than defaulting to everybody. That is the one misconfiguration that would
+silently open this to the world.
+
+| variable | what it is |
+|---|---|
+| `TELEGRAM_BOT_TOKEN` | from BotFather |
+| `TELEGRAM_WEBHOOK_SECRET` | `openssl rand -hex 32`. Not the same value as `TASKOS_TOKEN`. |
+| `TELEGRAM_ALLOWED_CHAT_IDS` | your numeric chat id; message @userinfobot to find it |
+
+Point Telegram at it once:
+
+```bash
+curl -X POST "https://api.telegram.org/bot$TELEGRAM_BOT_TOKEN/setWebhook" \
+  -H 'content-type: application/json' \
+  -d '{"url":"https://<deployment>/api/telegram",
+       "secret_token":"'"$TELEGRAM_WEBHOOK_SECRET"'",
+       "allowed_updates":["message"]}'
+```
+
+**The webhook answers 200 to everything it accepts, including its own failures.**
+Telegram retries any update it does not get a 200 for, with backoff, for hours —
+so a 500 from a transient database error turns one captured note into several.
+Problems come back as a reply message instead. The single exception is a bad
+secret header, which gets a 401 and no processing at all; answering 200 there
+would make the endpoint a free way for anyone to drive the bot.
+
+Files over 20MB are refused because Telegram will not serve them to a bot, and
+files over 5MB are pointed at `create_upload_link` instead. The reply says which.
+
 ## Things worth knowing before you change anything
 
 **`pressure` appears in `computeDemand` and nowhere else.** Task-level urgency

@@ -1,5 +1,6 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import mcp from './handler.js';
+import telegram, { TELEGRAM_PATH } from './telegram-route.js';
 
 /**
  * THE Vercel entrypoint.
@@ -97,6 +98,11 @@ export default async function server(
 
   if (path === MCP_PATH) {
     await mcp(req, res);
+    return;
+  }
+
+  if (path === TELEGRAM_PATH) {
+    await telegram(req, res);
     return;
   }
 
