@@ -89,6 +89,12 @@ psql "$DATABASE_URL" -f supabase/tests/triggers.sql   # ends: ALL TRIGGER TESTS 
 |---|---|
 | `TASKOS_TOKEN` | Bearer token the connector sends. Generate with `openssl rand -hex 32`. |
 | `DATABASE_URL` | Postgres connection string. On Supabase use the **transaction pooler** (port 6543) — serverless functions open a connection per invocation. |
+| `SUPABASE_URL` | Project URL. Only needed for documents. |
+| `SUPABASE_SERVICE_ROLE_KEY` | Service-role key, for Storage. Server-side only — it bypasses RLS, so it must never reach a browser. |
+
+Without the last two the nine core tools work normally and the four document
+tools report that storage is unconfigured, naming the variables. Degraded, not
+broken (D8).
 
 The server **fails closed**: if `TASKOS_TOKEN` is unset, every request is
 rejected with a 500. An unset secret never means "allow everyone".
@@ -174,11 +180,43 @@ Then, through Claude: *"I have about 25 hours this week — what's going to slip
 | `venture_status(slug)` | One venture: milestones with slack and coverage, blockers, indicators, top 5. |
 | `list_tasks(filter)` | Filtered list, max 15 with a true total. |
 | `close(task_id, ...)` | Marks done. Records actual time per D6. |
+| `attach_document(...)` | Store a small file inline (≤5MB) against a venture/project/milestone/task. |
+| `create_upload_link(...)` | A URL to upload anything larger to. The document is `pending` until it arrives. |
+| `list_documents(filter)` | What is attached and to what. Confirms pending uploads. |
+| `get_document(id)` | A short-lived signed URL to read one. |
 
 Every response carries a `confidence` object: `{ calibrated, balancingActive,
 coverageByMilestone, notes }`. Read the notes before treating a number as
 settled — the system states its own uncertainty rather than presenting guesses
 as facts.
+
+## Documents
+
+Files attach to the work they belong to. The bytes live in a **private**
+Supabase Storage bucket (`taskos-documents`); the `documents` table holds only
+metadata. Reads go through signed URLs that expire in 15 minutes by default and
+an hour at most — a public bucket would make every contract readable forever by
+anyone who ever saw a link.
+
+**Why two upload tools rather than one.** MCP tool arguments are JSON, so bytes
+can only reach a tool as base64. That works for a spec or a small PDF and cannot
+work for a deck. `attach_document` takes inline content up to 5MB;
+`create_upload_link` returns a URL the file goes to directly, browser to
+Supabase, with the service key never leaving the server. The tool descriptions
+are what stop Claude reaching for the wrong one.
+
+**Pending is a real state, not a bug.** Storage sends no callback when an upload
+finishes, so a document created by `create_upload_link` is `pending` until the
+server next reconciles against the bucket — which `list_documents` does, for the
+whole workspace prefix, in one request. A pending document means "a link was
+issued and no file has arrived", and saying so is better than defaulting to
+`stored` and listing files that do not exist. A row whose object has since been
+deleted becomes `missing` the first time anyone asks to read it.
+
+Two guards live in migration 0007, both proven by tests: a document may not
+reference another workspace's venture, project, milestone or task, and its
+`storage_path` must begin with its own workspace id — which is what the bucket
+policy authorises on.
 
 ## Things worth knowing before you change anything
 

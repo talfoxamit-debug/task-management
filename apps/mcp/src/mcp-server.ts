@@ -3,6 +3,12 @@ import { z } from 'zod';
 import type { Sql } from './db.js';
 import { errorResult, jsonResult } from './narrow.js';
 import {
+  attachDocument,
+  createUploadLink,
+  getDocument,
+  listDocuments,
+} from './documents.js';
+import {
   capacity,
   capture,
   close,
@@ -72,6 +78,13 @@ export function buildServer(sql: Sql): McpServer {
         '',
         'Lists are capped at 15 with a `total`; ask for a narrower filter rather than assuming',
         'you were shown everything.',
+        '',
+        'DOCUMENTS. Files attach to a venture, project, milestone or task and exist to be',
+        'context later. Use attach_document only when you already hold the content and it is',
+        'small (under 5MB, passed inline); use create_upload_link for everything else and give',
+        'Tal the link. A document stays "pending" until its upload is seen, so do not describe',
+        'a pending document as filed. TaskOS never reads or interprets document contents —',
+        'if you need to know what a file says, fetch it with get_document and read it yourself.',
       ].join('\n'),
     },
   );
@@ -258,6 +271,93 @@ export function buildServer(sql: Sql): McpServer {
       },
     },
     async (args) => guard(() => close(sql, args)),
+  );
+
+  // -------------------------------------------------------------------------
+  // Documents
+  // -------------------------------------------------------------------------
+  // The descriptions carry one distinction that Claude will otherwise get
+  // wrong every time: attach_document needs the bytes in the tool call, which
+  // only works for small text-ish files, and create_upload_link is for
+  // everything else. Getting this backwards means either a failed call on a
+  // large file or a pointless round trip on a small one.
+
+  const attachment = {
+    venture: z.string().optional().describe('Venture slug or name.'),
+    project: z.string().optional(),
+    milestone: z.string().optional().describe('Milestone name within that venture.'),
+    task_id: z.string().optional().describe('Attaching to a task also files it under that task\'s venture and project.'),
+  };
+
+  server.registerTool(
+    'attach_document',
+    {
+      title: 'Attach a small document inline',
+      description:
+        'Store a document whose CONTENT YOU ALREADY HAVE, passed inline as content_text or content_base64. Suitable for notes, specs, CSVs and small PDFs up to 5MB. For anything larger, or any file you cannot read the bytes of, use create_upload_link instead — inline content travels inside the tool call and a big file will simply not fit. TaskOS stores the file verbatim and never reads or interprets it.',
+      inputSchema: {
+        title: z.string().min(1).describe('What this document is, in words. Not the filename.'),
+        filename: z.string().min(1).describe('e.g. contract.pdf — used for the stored path and the extension.'),
+        content_text: z.string().optional().describe('For text documents. Use this or content_base64, not both.'),
+        content_base64: z.string().optional().describe('Base64 for binary. Max 5MB decoded.'),
+        mime_type: z.string().optional(),
+        notes: z.string().optional().describe('Why this matters and what it is for. This is what makes it useful as context later.'),
+        ...attachment,
+        idempotency_key: z.string().optional(),
+      },
+    },
+    async (args) => guard(() => attachDocument(sql, args)),
+  );
+
+  server.registerTool(
+    'create_upload_link',
+    {
+      title: 'Get a link to upload a file to',
+      description:
+        'Create a document record and return a short-lived URL Tal can upload the file to directly. Use this for anything you do not hold the bytes of, and for anything over 5MB — decks, scans, photos, large PDFs. The document is recorded immediately as "pending" and becomes readable once the upload arrives; list_documents confirms it. Give Tal the upload_url.',
+      inputSchema: {
+        title: z.string().min(1),
+        filename: z.string().min(1),
+        mime_type: z.string().optional(),
+        notes: z.string().optional(),
+        ...attachment,
+      },
+    },
+    async (args) => guard(() => createUploadLink(sql, args)),
+  );
+
+  server.registerTool(
+    'list_documents',
+    {
+      title: 'List attached documents',
+      description:
+        'What documents exist and what they are attached to. Filter by venture, task, milestone, or a text search over titles and notes. Also confirms any pending uploads that have since arrived. Capped at 15 with a true total.',
+      inputSchema: {
+        venture: z.string().optional(),
+        task_id: z.string().optional(),
+        milestone: z.string().optional(),
+        search: z.string().optional().describe('Matches title and notes.'),
+      },
+    },
+    async (args) => guard(() => listDocuments(sql, args)),
+  );
+
+  server.registerTool(
+    'get_document',
+    {
+      title: 'Get a link to read a document',
+      description:
+        'Return a short-lived signed URL for one document, plus what it is attached to. The URL expires — treat it as single-use and do not store it. Use this when you need to actually read a file Tal referred to.',
+      inputSchema: {
+        document_id: z.string(),
+        expires_in_seconds: z
+          .number()
+          .int()
+          .optional()
+          .describe('Default 900, maximum 3600. Shorter is safer.'),
+      },
+    },
+    async (args) => guard(() => getDocument(sql, args)),
   );
 
   return server;

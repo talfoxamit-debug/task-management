@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import postgres from 'postgres';
@@ -23,14 +23,17 @@ const USER = process.env['TEST_PGUSER'] ?? 'postgres';
 const here = path.dirname(fileURLToPath(import.meta.url));
 const migrationsDir = path.resolve(here, '../../../supabase/migrations');
 
-export const MIGRATIONS = [
-  '0001_schema.sql',
-  '0002_triggers.sql',
-  '0003_seed.sql',
-  '0004_unsorted_venture.sql',
-  '0005_tenancy.sql',
-  '0006_provision_workspace.sql',
-];
+/**
+ * Every migration in the directory, in filename order.
+ *
+ * Read rather than listed. A hardcoded list looks harmless and then silently
+ * omits the migration someone added last week, so the suite runs against a
+ * schema that no longer resembles production and passes while doing it. The
+ * numeric prefixes are what make sorted filename order the right order.
+ */
+export const MIGRATIONS = readdirSync(migrationsDir)
+  .filter((f) => /^\d{4}_.*\.sql$/.test(f))
+  .sort();
 
 function psql(db: string, args: string[]): void {
   execFileSync('psql', ['-h', HOST, '-p', String(PORT), '-U', USER, '-d', db, '-q', '-v', 'ON_ERROR_STOP=1', ...args], {

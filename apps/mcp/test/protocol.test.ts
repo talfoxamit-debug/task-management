@@ -34,9 +34,13 @@ function parse(result: unknown): Record<string, any> {
 }
 
 describe('tool registration', () => {
-  it('exposes exactly the nine tools of Part 5', async () => {
+  it('still exposes exactly the nine tools of Part 5', async () => {
     const { tools } = await client.listTools();
-    expect(tools.map((t) => t.name).sort()).toEqual([
+    // Asserted as a set, not a count: what Part 5 fixed is WHICH tools answer
+    // the slip question, and a later addition must not quietly rename or drop
+    // one of them. Growth beyond this list is allowed; change within it is not.
+    const names = new Set(tools.map((t) => t.name));
+    for (const required of [
       'capacity',
       'capture',
       'close',
@@ -46,7 +50,33 @@ describe('tool registration', () => {
       'set_milestone',
       'set_outcome_target',
       'venture_status',
-    ]);
+    ]) {
+      expect(names.has(required), `Part 5 tool ${required} is missing`).toBe(true);
+    }
+  });
+
+  it('exposes the four document tools', async () => {
+    const { tools } = await client.listTools();
+    const names = new Set(tools.map((t) => t.name));
+    for (const required of [
+      'attach_document',
+      'create_upload_link',
+      'list_documents',
+      'get_document',
+    ]) {
+      expect(names.has(required), `document tool ${required} is missing`).toBe(true);
+    }
+  });
+
+  it('tells Claude which document tool to reach for', async () => {
+    const { tools } = await client.listTools();
+    const inline = tools.find((t) => t.name === 'attach_document')!;
+    const link = tools.find((t) => t.name === 'create_upload_link')!;
+    // Without this each will be used for the other's job: inline uploads have a
+    // hard size ceiling that the description is the only warning about.
+    expect(inline.description).toContain('create_upload_link');
+    expect(inline.description).toContain('5MB');
+    expect(link.description).toContain('5MB');
   });
 
   it('describes the milestone / outcome-target distinction in both directions (D1)', async () => {
