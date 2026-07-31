@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import type { Sql } from '@taskos/mcp';
+import type { Sql } from '@taskos/mcp/lib';
 import { freshDb, type TestDb } from '../../mcp/test/harness.js';
 import { workspaceForUser } from '../lib/workspace.js';
 

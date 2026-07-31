@@ -1,5 +1,5 @@
 import { redirect } from 'next/navigation';
-import { getSql, loadPortfolio, runCapacity, runEngine } from '@taskos/mcp';
+import { getSql, loadPortfolio, runCapacity, runEngine } from '@taskos/mcp/lib';
 import { currentViewer } from '../lib/session';
 
 /**

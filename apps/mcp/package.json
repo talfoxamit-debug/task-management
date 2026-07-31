@@ -20,9 +20,10 @@
     "typescript": "^5.9.3",
     "vitest": "^4.1.10"
   },
-  "main": "./src/exports.ts",
-  "types": "./src/exports.ts",
+  "main": "./src/server.ts",
+  "types": "./src/server.ts",
   "exports": {
-    ".": "./src/exports.ts"
+    ".": "./src/server.ts",
+    "./lib": "./src/exports.ts"
   }
 }

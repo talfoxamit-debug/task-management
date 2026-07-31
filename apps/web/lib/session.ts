@@ -1,6 +1,6 @@
 import { createServerClient } from '@supabase/ssr';
 import { cookies } from 'next/headers';
-import { getSql } from '@taskos/mcp';
+import { getSql } from '@taskos/mcp/lib';
 import { workspaceForUser } from './workspace';
 
 /**

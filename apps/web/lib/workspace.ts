@@ -1,4 +1,4 @@
-import type { Sql } from '@taskos/mcp';
+import type { Sql } from '@taskos/mcp/lib';
 
 /**
  * The workspace a signed-in user may see.
