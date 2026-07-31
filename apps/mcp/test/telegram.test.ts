@@ -158,20 +158,63 @@ describe('capture', () => {
   });
 });
 
-describe('/capacity', () => {
-  it('asks for hours when given none', async () => {
-    const out = await handleUpdate(sql, cfg, message('12345', { text: '/capacity' }));
-    if (out.handled) expect(out.reply).toContain('/capacity 25');
+describe('/week and /hours', () => {
+  it('asks for the week rather than inventing one, the first time', async () => {
+    const out = await handleUpdate(sql, cfg, message('12345', { text: '/week' }));
+    // An assumed 40-hour week produces a confident answer to a question nobody
+    // asked, so the only correct move with no number on record is to ask.
+    if (out.handled) {
+      expect(out.reply).toContain('How many hours');
+      expect(out.reply).toContain('/hours 25');
+    }
   });
 
-  it('answers with the verdict and carries the confidence notes', async () => {
-    const out = await handleUpdate(sql, cfg, message('12345', { text: '/capacity 25' }));
+  it('remembers a normal week so the number never has to be repeated', async () => {
+    const set = await handleUpdate(sql, cfg, message('12345', { text: '/hours 30' }));
+    if (set.handled) expect(set.reply).toContain('30 hours');
+
+    const rows = await sql<Array<{ h: string }>>`
+      select default_weekly_hours::text as h from settings limit 1`;
+    expect(Number(rows[0]!.h)).toBe(30);
+
+    const out = await handleUpdate(sql, cfg, message('12345', { text: '/week' }));
+    if (out.handled) expect(out.reply).toContain('30h available');
+  });
+
+  it('rejects a nonsense week instead of storing it', async () => {
+    const out = await handleUpdate(sql, cfg, message('12345', { text: '/hours 900' }));
+    if (out.handled) expect(out.reply).toContain('How many hours');
+    const rows = await sql<Array<{ h: string }>>`
+      select default_weekly_hours::text as h from settings limit 1`;
+    expect(Number(rows[0]!.h)).toBe(30);
+  });
+
+  it('says plainly that it cannot answer when no work is attached', async () => {
+    const out = await handleUpdate(sql, cfg, message('12345', { text: '/week 25' }));
     expect(out.handled).toBe(true);
     if (out.handled) {
-      expect(out.reply).toMatch(/Clear|Short/);
-      // A one-line phone answer is exactly where the uncertainty is most
-      // tempting to drop, so it is asserted here specifically.
-      expect(out.reply).toContain('Worth knowing:');
+      // "Clear, 20h spare" against an empty system is true and misleading. The
+      // reply has to say why it cannot answer instead.
+      expect(out.reply).toContain('cannot tell you what will slip');
+      expect(out.reply).toContain('no tasks are attached');
+      expect(out.reply).not.toMatch(/to spare/);
+    }
+  });
+
+  it('still accepts /capacity for anyone who learned that name', async () => {
+    const out = await handleUpdate(sql, cfg, message('12345', { text: '/capacity 25' }));
+    expect(out.handled).toBe(true);
+    if (out.handled) expect(out.reply).toContain('This week');
+  });
+});
+
+describe('/next', () => {
+  it('points at the inbox when nothing is active yet', async () => {
+    const out = await handleUpdate(sql, cfg, message('12345', { text: '/next' }));
+    expect(out.handled).toBe(true);
+    if (out.handled) {
+      expect(out.reply).toContain('inbox');
+      expect(out.reply).toContain('process the inbox');
     }
   });
 });

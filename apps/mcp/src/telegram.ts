@@ -170,8 +170,16 @@ export async function handleUpdate(
     return { handled: true, chatId, reply: HELP };
   }
 
-  if (text.startsWith('/capacity')) {
-    return { handled: true, chatId, reply: await capacityReply(sql, text) };
+  if (text.startsWith('/hours')) {
+    return { handled: true, chatId, reply: await setHoursReply(sql, text) };
+  }
+
+  if (text.startsWith('/week') || text.startsWith('/capacity')) {
+    return { handled: true, chatId, reply: await weekReply(sql, text) };
+  }
+
+  if (text.startsWith('/next')) {
+    return { handled: true, chatId, reply: await nextReply(sql) };
   }
 
   // A document or photo, with its caption as the title.
@@ -227,54 +235,145 @@ export async function handleUpdate(
 }
 
 const HELP = [
-  'TaskOS.',
+  'TaskOS — what is going to slip.',
   '',
-  'Send me anything and I put it in your inbox, word for word — no guessing at',
-  'ventures or deadlines. That happens later, with Claude.',
+  'Send me anything and it goes to your inbox, word for word. No guessing at',
+  'ventures or deadlines; that happens later, with Claude.',
   '',
-  'Send a photo or a file and I store it against your work. The caption becomes',
-  'its title, so caption it with what it is.',
+  'Send a photo or file and I store it. The caption becomes its title.',
   '',
-  '/capacity 25 — what slips at 25 hours this week',
+  '/next — what to work on now',
+  '/week — what slips this week',
+  '/hours 25 — set your normal working week',
   '/help — this',
 ].join('\n');
 
-async function capacityReply(sql: Sql, text: string): Promise<string> {
-  const arg = text.replace(/^\/capacity(@\S+)?/, '').trim();
-  // Number('') is 0, not NaN. Without the length check a bare /capacity answers
-  // confidently for a zero-hour week, which reads as a real verdict rather than
-  // as the missing argument it is.
+/** The remembered working week, or null if never stated. */
+async function defaultHours(sql: Sql, workspaceId: string): Promise<number | null> {
+  const rows = await sql<Array<{ h: string | null }>>`
+    select default_weekly_hours::text as h from settings where workspace_id = ${workspaceId}`;
+  const raw = rows[0]?.h;
+  return raw === null || raw === undefined ? null : Number(raw);
+}
+
+async function setHoursReply(sql: Sql, text: string): Promise<string> {
+  const arg = text.replace(/^\/hours(@\S+)?/, '').trim();
   const hours = arg.length === 0 ? NaN : Number(arg);
-  if (!Number.isFinite(hours) || hours < 0) {
-    return 'Tell me how many hours: /capacity 25';
+  if (!Number.isFinite(hours) || hours <= 0 || hours > 168) {
+    return 'How many hours do you normally have for work in a week?\n\nSend: /hours 25';
+  }
+  const workspaceId = await resolveWorkspaceId(sql);
+  await sql`update settings set default_weekly_hours = ${hours} where workspace_id = ${workspaceId}`;
+  return `Set. A normal week for you is ${hours} hours.\n\n/week now uses that, so you do not have to say it every time.`;
+}
+
+/**
+ * "What slips this week", in words rather than in figures.
+ *
+ * The earlier version reported usable-versus-required hours, which is exactly
+ * what the engine computes and exactly the wrong thing to put on a phone: it
+ * asks the reader to do the interpretation the system exists to do for them.
+ * This one leads with the answer, and only then shows the arithmetic behind it.
+ */
+async function weekReply(sql: Sql, text: string): Promise<string> {
+  const workspaceId = await resolveWorkspaceId(sql);
+  const arg = text.replace(/^\/(week|capacity)(@\S+)?/, '').trim();
+  const given = arg.length === 0 ? NaN : Number(arg);
+
+  let hours: number;
+  if (Number.isFinite(given) && given >= 0) {
+    hours = given;
+  } else {
+    const remembered = await defaultHours(sql, workspaceId);
+    if (remembered === null) {
+      // Never invent a working week. An assumed number produces a confident
+      // answer to a question nobody asked.
+      return [
+        'How many hours do you have for work this week?',
+        '',
+        'Send /hours 25 once and I will remember it,',
+        'or /week 18 for just this week.',
+      ].join('\n');
+    }
+    hours = remembered;
   }
 
   const { capacity } = await import('./tools.js');
   const res = await capacity(sql, { available_hours: hours });
-  const h = res['hours'] as { usable: number; required: number; deficit: number } | undefined;
+  const h = res['hours'] as
+    | { usable: number; required: number; deficit: number; buffer: number; recurring_overhead: number }
+    | undefined;
   if (!h) return 'No answer came back.';
 
+  const notes = (res['confidence'] as { notes?: string[] } | undefined)?.notes ?? [];
+  const nothingLoaded = notes.some((n) => n.includes('shares fall back to floors'));
+
+  // The empty-system case, said plainly. Reporting "clear, 20h spare" when
+  // there is no work in the system is technically true and actively misleading.
+  if (nothingLoaded) {
+    return [
+      `This week: ${hours}h available.`,
+      '',
+      'But I cannot tell you what will slip, because no tasks are attached to',
+      'any milestone yet. There is nothing to weigh.',
+      '',
+      'Talk to Claude about what each milestone actually needs, and this',
+      'becomes a real answer.',
+    ].join('\n');
+  }
+
   const lines: string[] = [];
+  if (res['verdict'] === 'deficit') {
+    lines.push(`This week does not fit. You are ${round(h.deficit)}h short.`);
+  } else {
+    lines.push(`This week fits, with ${round(-h.deficit)}h to spare.`);
+  }
+
   lines.push(
-    res['verdict'] === 'deficit'
-      ? `Short ${round(h.deficit)}h. ${round(h.usable)} usable against ${round(h.required)} required.`
-      : `Clear. ${round(h.usable)}h usable against ${round(h.required)}h required.`,
+    '',
+    `${hours}h available − ${round(h.recurring_overhead)}h recurring − ${round(h.buffer)}h buffer = ${round(h.usable)}h real working time.`,
+    `Your milestones need ${round(h.required)}h.`,
   );
 
   const slips = (res['slip_order'] as Array<{ milestone: string; cost_of_slip: string }>) ?? [];
   if (res['verdict'] === 'deficit' && slips.length > 0) {
-    lines.push('', 'Slips first:');
-    for (const s of slips.slice(0, 3)) lines.push(`• ${s.milestone} — ${s.cost_of_slip}`);
+    lines.push('', 'Give up first, in this order:');
+    slips.slice(0, 3).forEach((s, i) => lines.push(`${i + 1}. ${s.milestone} — ${s.cost_of_slip}`));
   }
 
-  // The confidence notes are the reason any of this can be trusted, and a
-  // one-line phone answer is exactly where they are most tempting to drop.
-  const notes = (res['confidence'] as { notes?: string[] } | undefined)?.notes ?? [];
-  if (notes.length > 0) {
-    lines.push('', 'Worth knowing:');
-    for (const n of notes.slice(0, 3)) lines.push(`• ${n}`);
-    if (notes.length > 3) lines.push(`• (+${notes.length - 3} more — ask Claude for the full picture)`);
+  const caveats = notes.filter(
+    (n) =>
+      n.includes('coverage is vacuously') ||
+      n.includes('no critical path') ||
+      n.includes('calibration not applied'),
+  );
+  if (caveats.length > 0) {
+    lines.push('', `Treat this as rough: ${caveats.length} things are not measured yet.`);
   }
+  return lines.join('\n');
+}
+
+/** What to actually pick up now — the question a phone is usually asked. */
+async function nextReply(sql: Sql): Promise<string> {
+  const { listTasks } = await import('./tools.js');
+  const res = await listTasks(sql, { status: 'active' });
+  const tasks =
+    (res['tasks'] as Array<{ title: string; venture: string; estimate_minutes: number }>) ?? [];
+
+  if (tasks.length === 0) {
+    const inbox = await listTasks(sql, { status: 'inbox' });
+    const n = (inbox['total'] as number) ?? 0;
+    return n > 0
+      ? `Nothing is active yet. ${n} item(s) are sitting in the inbox — ask Claude to process the inbox and file them.`
+      : 'Nothing active and nothing in the inbox. Send me anything to capture it.';
+  }
+
+  const lines = ['Next, highest first:', ''];
+  tasks.slice(0, 5).forEach((t, i) => {
+    const mins = t.estimate_minutes;
+    const size = mins >= 60 ? `${Math.round((mins / 60) * 10) / 10}h` : `${mins}m`;
+    lines.push(`${i + 1}. ${t.title} — ${t.venture}, ${size}`);
+  });
   return lines.join('\n');
 }
 

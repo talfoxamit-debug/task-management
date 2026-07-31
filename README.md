@@ -222,12 +222,22 @@ policy authorises on.
 
 Capture from your phone. `POST /api/telegram` on the same server.
 
-It does three things — capture text to the inbox verbatim, store a photo or file
-against your work, and answer `/capacity 25`. Deliberately nothing else:
+It does four things — capture text to the inbox verbatim, store a photo or file
+against your work, answer `/week`, and list `/next`. Deliberately nothing else:
 anything needing judgement (which venture, what estimate, what blocks what)
 stays in the Claude conversation, because that is where judgement is. A bot that
 parsed "urgent yachtyhub thing by friday" into fields would be guessing, and the
 inbox stops being trustworthy the moment it guesses.
+
+`/hours 25` records a normal working week so `/week` never has to be given the
+number. It stays unset until stated: an assumed 40-hour week produces a
+confident answer to a question nobody asked, so with nothing on record the bot
+asks rather than guesses.
+
+`/week` leads with the answer in words — "this week does not fit, you are 6h
+short" — and shows the arithmetic underneath. When no tasks are attached to any
+milestone it says it cannot answer and why, rather than reporting the
+technically-true "clear, 20h spare" that an empty system produces.
 
 **Two independent gates, both required.** A Telegram bot answers whoever finds
 it, so:
