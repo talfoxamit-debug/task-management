@@ -1,5 +1,6 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
+import { INSTRUCTIONS } from './instructions.js';
 import type { Sql } from './db.js';
 import { errorResult, jsonResult } from './narrow.js';
 import {
@@ -61,31 +62,7 @@ export function buildServer(sql: Sql): McpServer {
   const server = new McpServer(
     { name: 'taskos', version: '1.0.0' },
     {
-      instructions: [
-        'TaskOS answers one question: given real milestones and real hours, what is going to slip?',
-        '',
-        'Start with capacity(available_hours) — it is the main tool and the primary output.',
-        '',
-        'Two object types must never be confused. A MILESTONE is an event Tal controls',
-        '("YachtyHub live"); it has a critical path and it drives demand. An OUTCOME TARGET',
-        'is a result someone else decides ("first sale"); it drives no demand, gets no slack,',
-        'and is tracked only by leading indicators. Never file a hoped-for result as a milestone.',
-        '',
-        'Every response carries a `confidence` object. Read its `notes` before presenting any',
-        'number as settled: below 8 samples per context nothing is calibrated, below 14 days',
-        'of events the balance corrector is off, and a milestone whose dependency coverage is',
-        'under 60% has slack that must not be trusted. Say so rather than rounding it away.',
-        '',
-        'Lists are capped at 15 with a `total`; ask for a narrower filter rather than assuming',
-        'you were shown everything.',
-        '',
-        'DOCUMENTS. Files attach to a venture, project, milestone or task and exist to be',
-        'context later. Use attach_document only when you already hold the content and it is',
-        'small (under 5MB, passed inline); use create_upload_link for everything else and give',
-        'Tal the link. A document stays "pending" until its upload is seen, so do not describe',
-        'a pending document as filed. TaskOS never reads or interprets document contents —',
-        'if you need to know what a file says, fetch it with get_document and read it yourself.',
-      ].join('\n'),
+      instructions: INSTRUCTIONS,
     },
   );
 
