@@ -101,6 +101,7 @@ export interface UpdateTaskInput {
   recurrence_rule?: string | null;
   notes?: string;
   milestone?: string | null;
+  kill_reason?: string | null;
   idempotency_key?: string;
 }
 
@@ -129,6 +130,25 @@ export async function updateTask(sql: Sql, input: UpdateTaskInput): Promise<Tool
       {
         code: 'recurrence_rule_required',
         message: 'is_recurring true needs a recurrence_rule — nothing was written',
+      },
+    ]);
+  }
+
+  // status:'killed' was reachable through the enum and impossible to satisfy.
+  //
+  // The tasks table carries `check (status <> 'killed' or kill_reason is not
+  // null)`, and update_task had no way to set that column — so every attempt
+  // failed with `violates check constraint "tasks_check"`, which does not name
+  // the field it wants. A dead path with an unhelpful error is worse than no
+  // path: the caller cannot tell a bug from a mistake of their own.
+  const statusAfter = given(input, 'status') ? input.status! : before.status;
+  const killReasonAfter = given(input, 'kill_reason') ? input.kill_reason : before.kill_reason;
+  if (statusAfter === 'killed' && !killReasonAfter) {
+    return envelope(plainConfidence([]), { task: before }, [
+      {
+        code: 'kill_reason_required',
+        message:
+          'killing a task needs kill_reason — nothing was written. kill_task is the tool for this and records it for you.',
       },
     ]);
   }
@@ -163,6 +183,13 @@ export async function updateTask(sql: Sql, input: UpdateTaskInput): Promise<Tool
   if (given(input, 'title')) sets.push(sql`title = ${input.title!}`);
   if (given(input, 'notes')) sets.push(sql`notes = ${input.notes ?? null}`);
   if (given(input, 'status')) sets.push(sql`status = ${input.status!}`);
+  if (given(input, 'kill_reason')) sets.push(sql`kill_reason = ${input.kill_reason ?? null}`);
+  // Moving off killed takes the reason with it: a live task carrying "never
+  // real work" is a sentence the next reader will believe.
+  if (given(input, 'status') && before.status === 'killed' && statusAfter !== 'killed'
+      && !given(input, 'kill_reason')) {
+    sets.push(sql`kill_reason = ${null}`);
+  }
   if (given(input, 'criticality')) sets.push(sql`criticality = ${input.criticality!}`);
   if (given(input, 'context')) sets.push(sql`context = ${input.context!}`);
   if (given(input, 'energy')) sets.push(sql`energy = ${input.energy!}`);

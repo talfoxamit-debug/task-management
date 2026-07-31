@@ -454,6 +454,13 @@ export function buildServer(sql: Sql): McpServer {
           .describe('Setting false also clears the rule. Setting true without a rule is an error.'),
         recurrence_rule: z.string().nullable().optional(),
         notes: z.string().optional(),
+        kill_reason: z
+          .string()
+          .nullable()
+          .optional()
+          .describe(
+            'Required when setting status to killed. Prefer kill_task, which records it for you.',
+          ),
         idempotency_key: z.string().optional(),
       },
     },

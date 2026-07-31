@@ -434,3 +434,49 @@ describe('duplicate dependency edges', () => {
     expect(rows).toHaveLength(1);
   });
 });
+
+describe('the killed status through update_task', () => {
+  /**
+   * This was a dead path. The status enum accepted 'killed', the tasks table
+   * carries `check (status <> 'killed' or kill_reason is not null)`, and
+   * update_task had no way to set that column — so every attempt failed with
+   * `violates check constraint "tasks_check"`, which does not name the field it
+   * wants. A caller could not tell a bug from a mistake of their own.
+   */
+  it('refuses with a message that names the missing field', async () => {
+    const id = await taskIdByTitle(sql, 'Wire the listings import');
+    const res = await updateTask(sql, { task_id: id, status: 'killed' });
+    expect(res.ok).toBe(false);
+    expect(res.errors?.[0]?.code).toBe('kill_reason_required');
+    expect(res.errors?.[0]?.message).toContain('kill_reason');
+    expect(res.errors?.[0]?.message).toContain('kill_task');
+    expect(res.errors?.[0]?.message).toContain('nothing was written');
+
+    const row = await sql<Array<{ status: string }>>`select status from tasks where id = ${id}`;
+    expect(row[0]!.status).not.toBe('killed');
+  });
+
+  it('succeeds when the reason is supplied', async () => {
+    const id = await taskIdByTitle(sql, 'Wire the listings import');
+    const res = await updateTask(sql, {
+      task_id: id,
+      status: 'killed',
+      kill_reason: 'superseded by the pilot',
+    });
+    expect(res.ok).toBe(true);
+    const row = await sql<Array<{ status: string; kill_reason: string }>>`
+      select status, kill_reason from tasks where id = ${id}`;
+    expect(row[0]!.status).toBe('killed');
+    expect(row[0]!.kill_reason).toBe('superseded by the pilot');
+  });
+
+  it('clears the reason when the task comes back to life', async () => {
+    const id = await taskIdByTitle(sql, 'Wire the listings import');
+    await updateTask(sql, { task_id: id, status: 'active' });
+    const row = await sql<Array<{ kill_reason: string | null }>>`
+      select kill_reason from tasks where id = ${id}`;
+    // A live task carrying "superseded by the pilot" is a sentence the next
+    // reader believes.
+    expect(row[0]!.kill_reason).toBeNull();
+  });
+});
