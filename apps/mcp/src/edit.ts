@@ -364,6 +364,9 @@ export async function reopenTask(
          set status = 'active', closed_at = null, kill_reason = null,
              actual_minutes = case when ${clear} then null else actual_minutes end,
              actual_inferred = case when ${clear} then true else actual_inferred end,
+             -- Clearing the duration must clear who stated it, or the next
+             -- close inherits an attribution that is no longer true.
+             actual_by_person_id = case when ${clear} then null else actual_by_person_id end,
              last_touched_at = now()
        where id = ${input.task_id} and workspace_id = ${workspaceId}
     `;

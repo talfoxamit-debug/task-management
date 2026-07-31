@@ -1030,6 +1030,18 @@ export async function close(
     actual_minutes?: number;
     evidence?: string;
     idempotency_key?: string;
+    /**
+     * Set when someone other than Tal closed this, through a delegation link.
+     *
+     * It does two jobs. It records WHO stated the duration, and it keeps that
+     * duration out of the calibration table: calibration exists to correct
+     * TAL's estimating, and Othman taking 120 minutes on a 90-minute task is
+     * evidence about Othman, not evidence that Tal's deep_work runs long.
+     */
+    by_person_id?: string;
+    /** The delegate route passes this so a link can only close its own task. */
+    require_assignee?: string;
+    actor?: string;
   },
 ): Promise<ToolEnvelope> {
   const replay = await findReplay(sql, input.idempotency_key);
@@ -1042,15 +1054,31 @@ export async function close(
 
   const workspaceId = await resolveWorkspaceId(sql);
   const existing = await sql<
-    Array<{ id: string; status: string; title: string; context: string; estimate_minutes: number }>
+    Array<{
+      id: string;
+      status: string;
+      title: string;
+      context: string;
+      estimate_minutes: number;
+      assignee_person_id: string | null;
+    }>
   >`
-    select id, status, title, context, estimate_minutes from tasks
+    select id, status, title, context, estimate_minutes, assignee_person_id from tasks
      where id = ${input.task_id} and workspace_id = ${workspaceId}
   `;
   const task = existing[0];
   if (!task) {
     return envelope(plainConfidence([]), { closed: null }, [
       { code: 'no_input', message: `task ${input.task_id} does not exist` },
+    ]);
+  }
+
+  // A delegation link may only close the task it was issued for, assigned to
+  // the person it was issued to. Checked here rather than in the route, so the
+  // guard cannot be forgotten by a future caller.
+  if (input.require_assignee && task.assignee_person_id !== input.require_assignee) {
+    return envelope(plainConfidence([]), { closed: null }, [
+      { code: 'not_yours', message: 'that task is not assigned to you — nothing was written' },
     ]);
   }
 
@@ -1080,6 +1108,7 @@ export async function close(
          set status = 'done',
              actual_minutes = ${actual},
              actual_inferred = ${!volunteered},
+             actual_by_person_id = ${input.by_person_id ?? null},
              last_touched_at = now()
        where id = ${task.id}
     `;
@@ -1092,9 +1121,15 @@ export async function close(
       `;
     }
 
-    // Only inferred = false rows feed calibration, so recompute from those alone.
+    // Only inferred = false rows feed calibration, so recompute from those
+    // alone -- AND only rows Tal volunteered himself.
+    //
+    // actual_by_person_id is not null means a delegate stated it. Those minutes
+    // are recorded and reported, but they measure someone else's speed. Letting
+    // them into the ratio would teach Tal's estimator from Othman's pace and
+    // change what the system says will slip, silently.
     let calibration: { ratio: number; sample_n: number } | null = null;
-    if (volunteered) {
+    if (volunteered && !input.by_person_id) {
       const rows = await tx<Array<{ ratio: string; n: string }>>`
         select coalesce(sum(actual_minutes)::numeric / nullif(sum(estimate_minutes), 0), 1.0)::text as ratio,
                count(*)::text as n
@@ -1103,6 +1138,7 @@ export async function close(
            and workspace_id = ${workspaceId}
            and actual_inferred = false
            and actual_minutes is not null
+           and actual_by_person_id is null
            and status = 'done'
       `;
       const ratio = Number(rows[0]?.ratio ?? 1);
@@ -1118,7 +1154,7 @@ export async function close(
 
     await recordReceipt(tx, {
       key: input.idempotency_key,
-      actor: ACTOR,
+      actor: input.actor ?? ACTOR,
       verb: 'closed',
       task_id: task.id,
       workspace_id: workspaceId,
@@ -1146,6 +1182,7 @@ export async function close(
     >`
       select id, title, estimate_minutes from tasks
        where status = 'done' and actual_inferred = true
+         and actual_by_person_id is null
          and workspace_id = ${workspaceId}
        order by (context = 'deep_work') desc, closed_at desc nulls last
        limit 1
