@@ -42,15 +42,29 @@ export type DatabaseStatus =
  * difference between a two-minute fix and an afternoon, and neither answer tells
  * a stranger anything they could not learn by trying to connect themselves.
  */
-async function databaseStatus(): Promise<DatabaseStatus> {
-  if (!process.env['DATABASE_URL'] && !process.env['POSTGRES_URL']) return 'not_configured';
+async function databaseStatus(): Promise<{ status: DatabaseStatus; code?: string }> {
+  if (!process.env['DATABASE_URL'] && !process.env['POSTGRES_URL'])
+    return { status: 'not_configured' };
   try {
     const { getSql } = await import('./db.js');
     await getSql()`select 1`;
-    return 'connected';
+    return { status: 'connected' };
   } catch (e) {
     const code = String((e as { code?: string })?.code ?? '');
-    switch (code) {
+    return { status: classify(code), ...(code ? { code } : {}) };
+  }
+}
+
+/**
+ * The SQLSTATE is returned alongside the classification because two codes that
+ * both mean "rejected at login" have different fixes, and without the code the
+ * operator cannot tell them apart: 28P01 is a wrong password, while 28000 from
+ * Supabase's pooler almost always means the USERNAME is wrong -- plain
+ * `postgres` where the pooler requires `postgres.<project-ref>`. The code alone
+ * says nothing a stranger could not learn by attempting a connection.
+ */
+function classify(code: string): DatabaseStatus {
+  switch (code) {
       case '28P01': // invalid_password
       case '28000': // invalid_authorization_specification
         return 'authentication_failed';
@@ -66,7 +80,6 @@ async function databaseStatus(): Promise<DatabaseStatus> {
         return 'timed_out';
       default:
         return 'unreachable';
-    }
   }
 }
 
@@ -100,7 +113,10 @@ export default async function server(
       ok: true,
       service: 'taskos-mcp',
       tokenConfigured: Boolean(process.env['TASKOS_TOKEN']),
-      database: await databaseStatus(),
+      ...(await (async () => {
+        const db = await databaseStatus();
+        return { database: db.status, ...(db.code ? { databaseCode: db.code } : {}) };
+      })()),
     });
     return;
   }
