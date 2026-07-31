@@ -58,10 +58,20 @@ describe('the agent instructions', () => {
     expect(INSTRUCTIONS).toContain('never describe a pending document as');
   });
 
+  it('invite the agent to report what is missing, with the constraints', () => {
+    expect(INSTRUCTIONS).toContain('suggest_improvement');
+    // Without "from the occasion" this becomes a wishlist generator.
+    expect(INSTRUCTIONS).toContain('FROM THE OCCASION');
+    // And without this it becomes a reason to derail what Tal asked for.
+    expect(INSTRUCTIONS).toContain('ONE sentence');
+    // Feedback in the portfolio would corrupt the one question this answers.
+    expect(INSTRUCTIONS).toContain('Feedback is NOT a task');
+  });
+
   it('stay short enough to survive a context window', () => {
     // Guidance nobody reads is guidance that does not exist. This is roughly
     // 1.5k tokens; well past that and it competes with the conversation.
-    expect(INSTRUCTIONS.length).toBeLessThan(7000);
+    expect(INSTRUCTIONS.length).toBeLessThan(9000);
     expect(INSTRUCTIONS.length).toBeGreaterThan(2000);
   });
 });

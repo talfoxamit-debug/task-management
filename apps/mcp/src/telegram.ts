@@ -182,6 +182,10 @@ export async function handleUpdate(
     return { handled: true, chatId, reply: await nextReply(sql) };
   }
 
+  if (text.startsWith('/ideas')) {
+    return { handled: true, chatId, reply: await ideasReply(sql) };
+  }
+
   // A document or photo, with its caption as the title.
   const file = message.document
     ? {
@@ -242,6 +246,7 @@ const HELP = [
   '',
   'Send a photo or file and I store it. The caption becomes its title.',
   '',
+  '/ideas — what the AI says is missing from this system',
   '/next — what to work on now',
   '/week — what slips this week',
   '/hours 25 — set your normal working week',
@@ -350,6 +355,36 @@ async function weekReply(sql: Sql, text: string): Promise<string> {
   if (caveats.length > 0) {
     lines.push('', `Treat this as rough: ${caveats.length} things are not measured yet.`);
   }
+  return lines.join('\n');
+}
+
+/**
+ * What the agents using this have reported as missing or broken.
+ *
+ * On the phone because Tal is the one who builds it, and the moment he is most
+ * likely to think about what to build next is not when he is at a desk.
+ */
+async function ideasReply(sql: Sql): Promise<string> {
+  const { listSuggestions } = await import('./feedback.js');
+  const res = await listSuggestions(sql, { status: 'open' });
+  const items =
+    (res['suggestions'] as Array<{
+      kind: string;
+      title: string;
+      severity: string;
+      occurrences: number;
+    }>) ?? [];
+
+  if (items.length === 0) {
+    return 'Nothing reported yet. When an AI session hits a limit of this system it files it here.';
+  }
+
+  const lines = [`${res['total']} open:`, ''];
+  for (const i of items.slice(0, 8)) {
+    const hits = i.occurrences > 1 ? ` ×${i.occurrences}` : '';
+    lines.push(`• [${i.severity}] ${i.title} (${i.kind}${hits})`);
+  }
+  lines.push('', 'Ask Claude for the detail on any of these.');
   return lines.join('\n');
 }
 

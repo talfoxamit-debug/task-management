@@ -184,6 +184,9 @@ Then, through Claude: *"I have about 25 hours this week — what's going to slip
 | `create_upload_link(...)` | A URL to upload anything larger to. The document is `pending` until it arrives. |
 | `list_documents(filter)` | What is attached and to what. Confirms pending uploads. |
 | `get_document(id)` | A short-lived signed URL to read one. |
+| `suggest_improvement(...)` | An agent tells Tal what this system is missing. |
+| `list_suggestions(filter)` | What has been reported, worst and most-repeated first. |
+| `resolve_suggestion(id, ...)` | Tal marks something planned, built or declined. |
 
 Every response carries a `confidence` object: `{ calibrated, balancingActive,
 coverageByMilestone, notes }`. Read the notes before treating a number as
@@ -277,6 +280,34 @@ would make the endpoint a free way for anyone to drive the bot.
 
 Files over 20MB are refused because Telegram will not serve them to a bot, and
 files over 5MB are pointed at `create_upload_link` instead. The reply says which.
+
+## Feedback from the agents using it
+
+Tal builds this. The agents using it are the ones who meet its edges — a tool
+that cannot express what the conversation needs, an answer that does not answer
+the question, a limit they had to work around. Before `suggest_improvement`,
+every one of those observations died with the conversation that produced it.
+
+Two properties keep it useful rather than a suggestion box nobody reads:
+
+**It is never work.** Feedback about the tool takes no share of the week, drives
+no demand and cannot appear in a slip ranking. Filing it as a task would corrupt
+the one question this system exists to answer, so it lives in its own table and a
+test asserts `capacity()` stays at zero required hours with suggestions on file.
+
+**Re-reporting counts rather than duplicates.** A unique index on the title turns
+a second report into `occurrences: 2`, which is stronger evidence than two rows
+and cannot be inflated by an eager reporter. The worst severity ever reported
+sticks — something once blocking does not become low because a later report
+caught it on a good day — and a *declined* item reopens itself when hit again,
+because being hit twice is new information.
+
+The instructions tell agents to file **from the occasion**, with what they were
+attempting, and then to say one sentence about it and carry on. A request without
+its occasion is a wish; with it, it is evidence.
+
+`/ideas` in Telegram lists what is open, because the moment Tal is most likely to
+think about what to build next is not when he is at a desk.
 
 ## Things worth knowing before you change anything
 

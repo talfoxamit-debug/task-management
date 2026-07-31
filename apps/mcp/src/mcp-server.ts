@@ -1,6 +1,7 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import { INSTRUCTIONS } from './instructions.js';
+import { listSuggestions, resolveSuggestion, suggestImprovement } from './feedback.js';
 import type { Sql } from './db.js';
 import { errorResult, jsonResult } from './narrow.js';
 import {
@@ -335,6 +336,76 @@ export function buildServer(sql: Sql): McpServer {
       },
     },
     async (args) => guard(() => getDocument(sql, args)),
+  );
+
+  // -------------------------------------------------------------------------
+  // Feedback to the person who builds this
+  // -------------------------------------------------------------------------
+  // Tal writes TaskOS. Agents using it are the ones who meet its edges, and
+  // until now every one of those observations died with the conversation. The
+  // description below has to do two jobs at once: invite the report, and stop
+  // it becoming a suggestion box that nobody reads.
+
+  server.registerTool(
+    'suggest_improvement',
+    {
+      title: 'Tell Tal what this system is missing',
+      description:
+        'Tal BUILDS this system and can change it. File a bug, a missing capability, or friction you actually hit — a tool that could not express what was needed, an answer that did not answer the question, a limit you had to work around. File it WHEN IT HAPPENS, from the real occasion, and include what you were trying to do. Do not file speculative wishlists, and do not derail what Tal asked for to discuss it — file it and mention it in a sentence. Re-reporting the same title increments a counter rather than duplicating, so say so again if you hit it again. This is NOT a task: it takes no share of the week and drives no demand.',
+      inputSchema: {
+        kind: z
+          .enum(['bug', 'feature', 'improvement', 'friction', 'question'])
+          .describe(
+            'bug: it does the wrong thing. feature: it cannot do this at all. improvement: it works but badly. friction: it works but cost you a workaround. question: the design is unclear.',
+          ),
+        title: z
+          .string()
+          .min(4)
+          .describe('Short and specific — this is the dedupe key, so phrase it as the problem.'),
+        detail: z.string().min(10).describe('What is wrong or missing, and what good would look like.'),
+        trigger_context: z
+          .string()
+          .optional()
+          .describe(
+            'The concrete moment: the call that failed, the question you could not answer, the workaround you used. A request without its occasion is a wish.',
+          ),
+        severity: z
+          .enum(['blocking', 'high', 'medium', 'low'])
+          .optional()
+          .describe('blocking means you could not complete what Tal asked. Reserve it for that.'),
+        reported_from: z.string().optional().describe('Which surface, e.g. "claude session".'),
+      },
+    },
+    async (args) => guard(() => suggestImprovement(sql, args)),
+  );
+
+  server.registerTool(
+    'list_suggestions',
+    {
+      title: 'What has been reported about this system',
+      description:
+        'Everything filed via suggest_improvement, worst and most-repeated first. Check here before filing something that sounds familiar, and use it when Tal asks what needs building.',
+      inputSchema: {
+        status: z.enum(['open', 'planned', 'done', 'declined']).optional().describe('Default open.'),
+        kind: z.enum(['bug', 'feature', 'improvement', 'friction', 'question']).optional(),
+      },
+    },
+    async (args) => guard(() => listSuggestions(sql, args)),
+  );
+
+  server.registerTool(
+    'resolve_suggestion',
+    {
+      title: 'Mark a suggestion planned, built or declined',
+      description:
+        "Tal's side of the loop. Use only when Tal says what he has decided about a suggestion — never to tidy the list on your own judgement. A declined item that gets reported again reopens itself, because being hit twice is new evidence.",
+      inputSchema: {
+        id: z.string(),
+        status: z.enum(['open', 'planned', 'done', 'declined']),
+        note: z.string().optional().describe("Tal's reasoning, in his words where possible."),
+      },
+    },
+    async (args) => guard(() => resolveSuggestion(sql, args)),
   );
 
   return server;
