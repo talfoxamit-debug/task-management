@@ -68,10 +68,20 @@ describe('the agent instructions', () => {
     expect(INSTRUCTIONS).toContain('Feedback is NOT a task');
   });
 
+  it('distinguish killing from closing, which nothing else can teach', () => {
+    expect(INSTRUCTIONS).toContain('kill_task and close are NOT interchangeable');
+    expect(INSTRUCTIONS).toContain('teaches');
+  });
+
+  it('say to look up a slug rather than guess it', () => {
+    expect(INSTRUCTIONS).toContain('list_ventures');
+    expect(INSTRUCTIONS).toContain('do not');
+  });
+
   it('stay short enough to survive a context window', () => {
     // Guidance nobody reads is guidance that does not exist. This is roughly
     // 1.5k tokens; well past that and it competes with the conversation.
-    expect(INSTRUCTIONS.length).toBeLessThan(9000);
+    expect(INSTRUCTIONS.length).toBeLessThan(11000);
     expect(INSTRUCTIONS.length).toBeGreaterThan(2000);
   });
 });

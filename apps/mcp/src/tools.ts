@@ -381,7 +381,20 @@ export async function commitTasks(
         }
       }
 
-      for (const e of edges) {
+      // Deduplicate before insert AND before reporting. Declaring the same edge
+      // from both `blocks` on one task and `depends_on` on the other describes
+      // one edge, and the primary key on (task_id, blocks_task_id) has always
+      // meant only one row was written -- but the returned array listed it
+      // twice, which reads as a double write and is alarming for no reason.
+      const seen = new Set<string>();
+      const uniqueEdges = edges.filter((e) => {
+        const key = `${e.task_id}->${e.blocks_task_id}`;
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      });
+
+      for (const e of uniqueEdges) {
         await tx`
           insert into task_dependencies (task_id, blocks_task_id)
           values (${e.task_id}, ${e.blocks_task_id})
@@ -394,10 +407,10 @@ export async function commitTasks(
         actor: ACTOR,
         verb: 'committed_tasks',
         workspace_id: workspaceId,
-        result: { created, edges, total: created.length },
+        result: { created, edges: uniqueEdges, total: created.length },
       });
 
-      return { created, edges };
+      return { created, edges: uniqueEdges };
     });
 
     const notes: string[] = [];

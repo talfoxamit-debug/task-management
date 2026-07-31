@@ -187,6 +187,15 @@ Then, through Claude: *"I have about 25 hours this week — what's going to slip
 | `suggest_improvement(...)` | An agent tells Tal what this system is missing. |
 | `list_suggestions(filter)` | What has been reported, worst and most-repeated first. |
 | `resolve_suggestion(id, ...)` | Tal marks something planned, built or declined. |
+| `update_task(...)` | Change fields on an existing task. Null clears, absent leaves alone. |
+| `kill_task(id, reason)` | It should never have been on the list. Not the same as done. |
+| `reopen_task(id)` | Undo a close, clearing the recorded actual. |
+| `snooze_task(id, ...)` | Defer, and count. Three snoozes means it needs a decision. |
+| `close_many(closures[])` | An evening's closes in one call. |
+| `list_ventures` / `set_venture` | Enumerate, create, rename, retune. |
+| `list_milestones` | Everything, including the stale rows nothing else surfaces. |
+| `delete_milestone` / `delete_outcome_target` | Refuses by default when work is attached. |
+| `create_person` / `list_people` | Makes the assignee field usable, and shows delegated load. |
 
 Every response carries a `confidence` object: `{ calibrated, balancingActive,
 coverageByMilestone, notes }`. Read the notes before treating a number as
@@ -280,6 +289,47 @@ would make the endpoint a free way for anyone to drive the bot.
 
 Files over 20MB are refused because Telegram will not serve them to a bot, and
 files over 5MB are pointed at `create_upload_link` instead. The reply says which.
+
+## Correction
+
+The first sixteen tools could **create** and **complete** and nothing in
+between, so every mistake was permanent: a wrong estimate, a task filed as
+recurring that is not, a milestone superseded by reality. That is not a missing
+convenience. Real use of a task system is mostly correction, and one whose
+mistakes cannot be repaired stops being trusted the first time it is wrong.
+
+**`update_task` is a partial update, and null is not absent.** Only supplied
+fields change; an explicit `null` clears a nullable one. Collapsing those two
+would make it impossible to remove a deadline without rewriting the whole task.
+
+**`kill` is not `close`, and the difference is not cosmetic.** `close` means it
+happened and feeds calibration; `kill` means it should never have been on the
+list. Closing a mistaken task teaches the estimator from a fiction, which
+corrupts every future estimate in that context. `reopen_task` clears the
+recorded actual by default for the same reason.
+
+**`delete_milestone` refuses by default when tasks are attached**, returning the
+count and the ids. Detaching work silently is how a critical path disappears
+without anyone noticing.
+
+**`list_milestones` flags the two conditions that make a slip ranking read as
+nonsense**: an active milestone with no attached tasks, which frees nothing when
+slipped, and one whose venture is inactive, whose demand is silently not
+counted.
+
+**People exist so delegation can be measured.** `commit_tasks` always refused an
+unknown assignee, correctly, but nothing could create one — so ownership was
+being carried in the notes field in capital letters. `hours_per_week` is what
+turns a name into a constraint.
+
+### On the duplicate dependency edges
+
+Reported as duplicate rows; they were not. `task_dependencies` has
+`primary key (task_id, blocks_task_id)` and the insert uses `on conflict do
+nothing`, so declaring the same edge from both `blocks` and `depends_on` always
+wrote exactly one row. The returned `edges` array listed it twice — a reporting
+bug, now deduplicated before both insert and report. Nothing was inflating
+coverage or slack, and there is nothing to clean up.
 
 ## Feedback from the agents using it
 

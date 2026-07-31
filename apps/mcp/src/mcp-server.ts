@@ -2,6 +2,16 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import { INSTRUCTIONS } from './instructions.js';
 import { listSuggestions, resolveSuggestion, suggestImprovement } from './feedback.js';
+import { closeMany, killTask, reopenTask, snoozeTask, updateTask } from './edit.js';
+import {
+  createPerson,
+  deleteMilestone,
+  deleteOutcomeTarget,
+  listMilestones,
+  listPeople,
+  listVentures,
+  setVenture,
+} from './registry.js';
 import type { Sql } from './db.js';
 import { errorResult, jsonResult } from './narrow.js';
 import {
@@ -406,6 +416,232 @@ export function buildServer(sql: Sql): McpServer {
       },
     },
     async (args) => guard(() => resolveSuggestion(sql, args)),
+  );
+
+  // -------------------------------------------------------------------------
+  // Correction
+  // -------------------------------------------------------------------------
+  // The system could create work and complete it and nothing in between, so
+  // every mistake was permanent. These are what make it repairable.
+
+  server.registerTool(
+    'update_task',
+    {
+      title: 'Change fields on an existing task',
+      description:
+        'Partial update: ONLY the fields you supply change, everything else is untouched. Pass an explicit null to CLEAR a nullable field (deadline_date, target_date, assignee, milestone, project) — omitting it leaves it alone, which is a different thing. Returns the whole task afterwards so you do not need a second read. Use this rather than creating a corrected duplicate.',
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true },
+      inputSchema: {
+        task_id: z.string(),
+        title: z.string().optional(),
+        venture: z.string().optional().describe('Slug or name.'),
+        project: z.string().nullable().optional(),
+        milestone: z.string().nullable().optional().describe('null detaches it from its milestone.'),
+        status: taskStatus.optional(),
+        criticality: criticality.optional(),
+        context: context.optional(),
+        energy: energy.optional(),
+        estimate_minutes: z.number().int().positive().optional(),
+        value: z.number().int().min(1).max(10).optional(),
+        deadline_date: civilDate.nullable().optional(),
+        deadline_time: z.string().nullable().optional(),
+        target_date: civilDate.nullable().optional(),
+        lead_time_days: z.number().int().positive().nullable().optional(),
+        assignee: z.string().nullable().optional().describe('Person name; null unassigns.'),
+        is_recurring: z
+          .boolean()
+          .optional()
+          .describe('Setting false also clears the rule. Setting true without a rule is an error.'),
+        recurrence_rule: z.string().nullable().optional(),
+        notes: z.string().optional(),
+        idempotency_key: z.string().optional(),
+      },
+    },
+    async (args) => guard(() => updateTask(sql, args)),
+  );
+
+  server.registerTool(
+    'kill_task',
+    {
+      title: 'Kill a task that should never have been on the list',
+      description:
+        'Mark a task killed. NOT the same as close: close means it happened, kill means it should not have been here or the world changed. The difference is not cosmetic — close feeds calibration, so closing a mistaken task teaches the estimator from a fiction. A killed task contributes no demand and drops out of capacity.',
+      annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true },
+      inputSchema: {
+        task_id: z.string(),
+        reason: z.string().optional().describe('Why it is not real work. Recorded permanently.'),
+        idempotency_key: z.string().optional(),
+      },
+    },
+    async (args) => guard(() => killTask(sql, args)),
+  );
+
+  server.registerTool(
+    'reopen_task',
+    {
+      title: 'Undo a close',
+      description:
+        'Return a done or killed task to active. By default it clears the recorded actual_minutes, because a mistaken close otherwise keeps teaching calibration a duration that never happened. Pass clear_actual:false only if the time really was spent.',
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true },
+      inputSchema: {
+        task_id: z.string(),
+        clear_actual: z.boolean().optional().describe('Default true.'),
+        idempotency_key: z.string().optional(),
+      },
+    },
+    async (args) => guard(() => reopenTask(sql, args)),
+  );
+
+  server.registerTool(
+    'snooze_task',
+    {
+      title: 'Defer a task, and count it',
+      description:
+        'Push a task out and increment its snooze counter. At three snoozes it leaves the ranking entirely and shows up as needing triage — the repeatedly-deferred task is the highest-signal object in the system, and that is what this counter is for. Give until (a date) or days.',
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false },
+      inputSchema: {
+        task_id: z.string(),
+        until: civilDate.optional(),
+        days: z.number().int().positive().optional(),
+        reason: z.string().optional().describe('Why it is being pushed. This is the useful part.'),
+      },
+    },
+    async (args) => guard(() => snoozeTask(sql, args)),
+  );
+
+  server.registerTool(
+    'close_many',
+    {
+      title: 'Close several tasks at once',
+      description:
+        'An evening wrap-up in one call. Same rule as close: pass actual_minutes ONLY where Tal volunteered a duration, never inferred. Partial success is reported per task — some closing while others fail is normal and is not an error.',
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true },
+      inputSchema: {
+        closures: z
+          .array(
+            z.object({
+              task_id: z.string(),
+              actual_minutes: z.number().int().positive().optional(),
+              evidence: z.string().optional(),
+            }),
+          )
+          .min(1),
+        idempotency_key: z.string().optional(),
+      },
+    },
+    async (args) => guard(() => closeMany(sql, args)),
+  );
+
+  // -------------------------------------------------------------------------
+  // Enumeration — you cannot audit what you cannot list
+  // -------------------------------------------------------------------------
+
+  server.registerTool(
+    'list_ventures',
+    {
+      title: 'Every venture, with its slug',
+      description:
+        'The ventures, their slugs, weights, floors, ceilings and whether they are active — plus open task and milestone counts. Call this when you need a slug, rather than guessing one and reading it out of an error message.',
+      annotations: { readOnlyHint: true },
+      inputSchema: { active: z.boolean().optional() },
+    },
+    async (args) => guard(() => listVentures(sql, args)),
+  );
+
+  server.registerTool(
+    'set_venture',
+    {
+      title: 'Create, rename or retune a venture',
+      description:
+        'Change a venture\'s name, slug, strategic weight, floor, ceiling or active flag; pass create:true to make a new one. A slug rename carries every task, milestone and outcome target with it, because they reference it by id. Weights and floors change what the whole portfolio recommends — only set them when Tal says so.',
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true },
+      inputSchema: {
+        slug: z.string().describe('The venture to change, by current slug or name.'),
+        create: z.boolean().optional().describe('Make it if it does not exist.'),
+        name: z.string().optional(),
+        new_slug: z.string().optional(),
+        weight: z.number().min(0.3).max(2).optional(),
+        floor: z.number().min(0).max(0.5).optional(),
+        ceiling: z.number().min(0.1).max(1).optional(),
+        active: z.boolean().optional(),
+        idempotency_key: z.string().optional(),
+      },
+    },
+    async (args) => guard(() => setVenture(sql, args)),
+  );
+
+  server.registerTool(
+    'list_milestones',
+    {
+      title: 'Every milestone, including the stale ones',
+      description:
+        'All milestones with venture, due date, hardness, cost of slip, status and how many tasks are attached. Flags the two conditions that make a slip ranking read as nonsense: an active milestone with NO attached tasks (it frees nothing when slipped) and one whose venture is inactive (its demand is silently not counted).',
+      annotations: { readOnlyHint: true },
+      inputSchema: {
+        venture: z.string().optional(),
+        status: z.enum(['active', 'hit', 'missed', 'dropped']).optional(),
+        include_outcome_targets: z.boolean().optional(),
+      },
+    },
+    async (args) => guard(() => listMilestones(sql, args)),
+  );
+
+  server.registerTool(
+    'delete_milestone',
+    {
+      title: 'Delete a milestone',
+      description:
+        'Remove a milestone. REFUSES by default if tasks are attached, and tells you how many and which — detaching work silently is how a critical path disappears without anyone noticing. Pass force:true to detach and delete anyway; the tasks survive, unattached.',
+      annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true },
+      inputSchema: {
+        milestone_id: z.string(),
+        force: z.boolean().optional(),
+        idempotency_key: z.string().optional(),
+      },
+    },
+    async (args) => guard(() => deleteMilestone(sql, args)),
+  );
+
+  server.registerTool(
+    'delete_outcome_target',
+    {
+      title: 'Delete an outcome target',
+      description:
+        'Remove an outcome target and its milestone links. Nothing is orphaned: outcome targets own no tasks and drive no demand.',
+      annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true },
+      inputSchema: { outcome_id: z.string(), idempotency_key: z.string().optional() },
+    },
+    async (args) => guard(() => deleteOutcomeTarget(sql, args)),
+  );
+
+  server.registerTool(
+    'create_person',
+    {
+      title: 'Record someone work can be delegated to',
+      description:
+        'Create a person so commit_tasks and update_task can assign to them. Give hours_per_week when Tal states it — delegated capacity is the real limit on what can come off his own week, and it cannot be reported without knowing how much of theirs exists. Calling again with the same name updates rather than duplicating.',
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true },
+      inputSchema: {
+        name: z.string().min(1),
+        role: z.string().optional(),
+        hours_per_week: z.number().min(0).max(168).optional().describe('Only if Tal stated it.'),
+        active: z.boolean().optional(),
+        idempotency_key: z.string().optional(),
+      },
+    },
+    async (args) => guard(() => createPerson(sql, args)),
+  );
+
+  server.registerTool(
+    'list_people',
+    {
+      title: 'Who work can go to, and how loaded they are',
+      description:
+        'Everyone recorded, with their stated week and how many open hours are already assigned to them. Use it before delegating, and to answer what is actually on someone.',
+      annotations: { readOnlyHint: true },
+      inputSchema: { active: z.boolean().optional() },
+    },
+    async (args) => guard(() => listPeople(sql, args)),
   );
 
   return server;

@@ -68,6 +68,42 @@ describe('tool registration', () => {
     }
   });
 
+  it('exposes the correction and enumeration tools', async () => {
+    const { tools } = await client.listTools();
+    const names = new Set(tools.map((t) => t.name));
+    for (const required of [
+      'update_task',
+      'kill_task',
+      'reopen_task',
+      'snooze_task',
+      'close_many',
+      'list_ventures',
+      'set_venture',
+      'list_milestones',
+      'delete_milestone',
+      'delete_outcome_target',
+      'create_person',
+      'list_people',
+    ]) {
+      expect(names.has(required), `${required} is missing`).toBe(true);
+    }
+  });
+
+  it('annotates destructive tools as destructive', async () => {
+    const { tools } = await client.listTools();
+    const byName = new Map(tools.map((t) => [t.name, t]));
+    // A client may surface these differently -- confirmation prompts, styling --
+    // and a delete that claims to be safe is the one that gets clicked through.
+    for (const name of ['kill_task', 'delete_milestone', 'delete_outcome_target']) {
+      expect(byName.get(name)?.annotations?.destructiveHint, name).toBe(true);
+    }
+    for (const name of ['list_ventures', 'list_people', 'list_milestones']) {
+      expect(byName.get(name)?.annotations?.readOnlyHint, name).toBe(true);
+    }
+    expect(byName.get('update_task')?.annotations?.destructiveHint).toBe(false);
+    expect(byName.get('update_task')?.annotations?.idempotentHint).toBe(true);
+  });
+
   it('tells Claude which document tool to reach for', async () => {
     const { tools } = await client.listTools();
     const inline = tools.find((t) => t.name === 'attach_document')!;
