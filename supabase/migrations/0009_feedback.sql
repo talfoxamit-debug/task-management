@@ -12,7 +12,7 @@
 
 begin;
 
-create table feedback (
+create table if not exists feedback (
   id uuid primary key default gen_random_uuid(),
   workspace_id uuid not null references workspaces(id) on delete cascade,
 
@@ -45,13 +45,14 @@ create table feedback (
   resolution_note text
 );
 
-create index feedback_workspace_idx on feedback (workspace_id, status, created_at desc);
-create index feedback_open_idx on feedback (workspace_id, severity) where status = 'open';
+create index if not exists feedback_workspace_idx on feedback (workspace_id, status, created_at desc);
+create index if not exists feedback_open_idx on feedback (workspace_id, severity) where status = 'open';
 
 -- One row per distinct title, so re-reporting increments rather than duplicates.
-create unique index feedback_title_unique on feedback (workspace_id, lower(title));
+create unique index if not exists feedback_title_unique on feedback (workspace_id, lower(title));
 
 alter table feedback enable row level security;
+drop policy if exists taskos_member_all on feedback;
 create policy taskos_member_all on feedback
   for all
   using (taskos_is_member(workspace_id))
