@@ -99,7 +99,14 @@ export async function freshDb(label: string): Promise<TestDb> {
     port: PORT,
     user: USER,
     database: name,
-    max: 2,
+    // ONE connection, matching production exactly.
+    //
+    // This was 2, and a spare connection hid a self-deadlock in commit_tasks
+    // for the entire life of the project: a query on the pool handle from
+    // inside sql.begin() found the second connection and completed, where
+    // production found none and hung forever. A test pool more generous than
+    // the real one does not test the real one.
+    max: 1,
     prepare: false,
     onnotice: () => {},
     types: {

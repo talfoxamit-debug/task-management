@@ -240,7 +240,9 @@ export async function commitTasks(
 
   try {
     const result = await sql.begin(async (tx) => {
-      const workspaceId = await resolveWorkspaceId(sql);
+      // tx, not sql. See the warning on resolveWorkspaceId: the pool handle here
+      // deadlocks against its own transaction and wedges the whole server.
+      const workspaceId = await resolveWorkspaceId(tx);
       const ventures = await tx<Array<{ id: string; slug: string; name: string }>>`
         select id, slug, name from ventures where workspace_id = ${workspaceId}`;
       const ventureBySlug = new Map(ventures.map((v) => [v.slug.toLowerCase(), v.id]));

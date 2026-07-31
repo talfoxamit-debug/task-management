@@ -90,8 +90,16 @@ export interface Settings {
  *
  * It refuses to guess once a second workspace exists, rather than silently
  * picking one and writing somebody's tasks into it.
+ *
+ * TAKES Queryable, NOT Sql, and that is load-bearing. Called with the pool
+ * handle from inside sql.begin(), it asks the pool for a connection while the
+ * only connection is held by the open transaction — and the transaction is
+ * waiting on this query. With max: 1 that deadlock is permanent and takes the
+ * whole server down, not just the one call: every later request queues behind a
+ * transaction that will never finish. It happened, in production, in
+ * commit_tasks. Pass tx inside a transaction.
  */
-export async function resolveWorkspaceId(sql: Sql): Promise<string> {
+export async function resolveWorkspaceId(sql: Queryable): Promise<string> {
   const configured = process.env['TASKOS_WORKSPACE_ID'];
   if (configured) return configured;
 

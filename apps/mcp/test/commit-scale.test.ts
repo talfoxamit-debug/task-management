@@ -75,3 +75,35 @@ describe('a realistic planning batch', () => {
     expect(res.ok).toBe(true);
   });
 });
+
+describe('the single-connection deadlock', () => {
+  /**
+   * The bug this file now guards against, and how it survived so long.
+   *
+   * commit_tasks called resolveWorkspaceId(sql) — the POOL handle — from inside
+   * sql.begin(). The pool has one connection, the open transaction holds it, and
+   * the transaction cannot finish until this query returns. It never does.
+   *
+   * In production that took the whole server down rather than the one call:
+   * every later request, including bare reads, queued behind a transaction that
+   * would never end, and only a fresh lambda cleared it. The symptom was "the
+   * server stopped responding after commit_tasks", which is exactly what a
+   * connection-level deadlock looks like from outside.
+   *
+   * The test harness used max: 2. The spare connection answered, the deadlock
+   * never formed, and every test passed. It now uses max: 1, so this test fails
+   * within its timeout if a pool query is ever put back inside a transaction.
+   */
+  it('completes rather than hanging, with a pool of exactly one', async () => {
+    const one = await commitTasks(sql, {
+      tasks: [{ title: 'Single task through a one-connection pool', venture: 'yachtyhub' }],
+      idempotency_key: 'deadlock-probe',
+    });
+    expect(one.ok).toBe(true);
+
+    // And the connection is usable afterwards. Before the fix this second call
+    // was the one that revealed the server was wedged.
+    const after = await sql<Array<{ n: number }>>`select count(*)::int as n from tasks`;
+    expect(after[0]!.n).toBeGreaterThan(0);
+  }, 15_000);
+});
