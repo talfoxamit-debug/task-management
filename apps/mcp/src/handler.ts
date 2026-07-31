@@ -86,6 +86,15 @@ export default async function handler(
     // out of the handler and Vercel answers with a generic crash page that says
     // nothing about the cause. Say what actually went wrong instead.
     const message = e instanceof Error ? e.message : String(e);
+    // LOG IT, not just return it. This message went into the response body and
+    // nowhere else, so a client that reported "500" without quoting the body
+    // left no trace of the cause anywhere in the platform logs — which is
+    // exactly the situation a 500 handler exists to prevent. The stack matters
+    // too: the message alone did not say which layer threw.
+    console.error(
+      `[taskos] request failed: ${message}`,
+      e instanceof Error && e.stack ? `\n${e.stack}` : '',
+    );
     if (!res.headersSent) {
       res.statusCode = 500;
       res.setHeader('content-type', 'application/json');
