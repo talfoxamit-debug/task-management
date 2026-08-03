@@ -1,5 +1,5 @@
 import { resolveWorkspaceId, type Queryable, type Sql } from './db.js';
-import { findReplay, recordReceipt } from './idempotency.js';
+import { findReplay, isCycleRejection, recordReceipt } from './idempotency.js';
 import { envelope, narrow, plainConfidence, type ToolEnvelope } from './narrow.js';
 import { ACTOR } from './tools.js';
 
@@ -497,4 +497,181 @@ export async function closeMany(sql: Sql, input: CloseManyInput): Promise<ToolEn
     { closed: list.items, total: list.total, ...(list.truncated ? { truncated: list.truncated } : {}) },
     errors,
   );
+}
+
+// ---------------------------------------------------------------------------
+// link_tasks
+// ---------------------------------------------------------------------------
+
+export interface LinkTasksInput {
+  links: Array<{ task: string; blocks?: string[]; depends_on?: string[] }>;
+  remove?: boolean;
+  idempotency_key?: string;
+}
+
+/**
+ * Add dependency edges between tasks that already exist.
+ *
+ * commit_tasks resolves `blocks` and `depends_on` by title, but only among the
+ * tasks in that same call — so work added later could never be wired into a
+ * chain created earlier. The consequence is not cosmetic: a milestone whose
+ * dependency graph is incomplete falls below the 60% coverage threshold, its
+ * slack is suppressed, and the whole milestone stops contributing a trustworthy
+ * answer to the one question this system exists to answer.
+ *
+ * Titles are accepted as well as ids because a conversation names tasks the way
+ * a person does. An ambiguous title is refused rather than guessed at: picking
+ * one of two identically-named tasks would wire the wrong critical path and
+ * nothing downstream would ever reveal it.
+ */
+export async function linkTasks(sql: Sql, input: LinkTasksInput): Promise<ToolEnvelope> {
+  const replay = await findReplay(sql, input.idempotency_key);
+  if (replay) {
+    return envelope(plainConfidence(['replayed: nothing was written']), {
+      ...(replay.result as Record<string, unknown>),
+      replayed: true,
+    });
+  }
+
+  const workspaceId = await resolveWorkspaceId(sql);
+  const errors: Array<{ code: string; message: string; subjects?: string[] }> = [];
+
+  const resolveOne = async (ref: string): Promise<string | null> => {
+    const byId = await sql<Array<{ id: string }>>`
+      select id from tasks where workspace_id = ${workspaceId} and id::text = ${ref}`;
+    if (byId[0]) return byId[0].id;
+
+    const byTitle = await sql<Array<{ id: string; title: string }>>`
+      select id, title from tasks
+       where workspace_id = ${workspaceId} and lower(title) = lower(${ref})
+         and status not in ('done', 'killed')
+       limit 5`;
+    if (byTitle.length === 1) return byTitle[0]!.id;
+    if (byTitle.length === 0) {
+      errors.push({
+        code: 'unknown_task',
+        message: `no open task matches "${ref}" — that edge was not written`,
+      });
+      return null;
+    }
+    // Guessing here wires the wrong critical path, and nothing downstream ever
+    // reveals it.
+    errors.push({
+      code: 'ambiguous_task',
+      message: `"${ref}" matches ${byTitle.length} open tasks — pass the id instead; that edge was not written`,
+      subjects: byTitle.map((b) => b.id),
+    });
+    return null;
+  };
+
+  const wanted: Array<{ task_id: string; blocks_task_id: string }> = [];
+  for (const link of input.links) {
+    const self = await resolveOne(link.task);
+    if (!self) continue;
+    for (const other of link.blocks ?? []) {
+      const id = await resolveOne(other);
+      if (id) wanted.push({ task_id: self, blocks_task_id: id });
+    }
+    for (const other of link.depends_on ?? []) {
+      const id = await resolveOne(other);
+      if (id) wanted.push({ task_id: id, blocks_task_id: self });
+    }
+  }
+
+  // The same edge declared from both sides is one edge. Deduplicated before the
+  // write so the report matches what happened.
+  const seen = new Set<string>();
+  const edges = wanted.filter((e) => {
+    if (e.task_id === e.blocks_task_id) {
+      errors.push({
+        code: 'self_edge',
+        message: 'a task cannot depend on itself — that edge was not written',
+        subjects: [e.task_id],
+      });
+      return false;
+    }
+    const key = `${e.task_id}->${e.blocks_task_id}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+
+  if (edges.length === 0) {
+    return envelope(plainConfidence(['no usable edges were given, so nothing was written']), {
+      written: 0,
+      edges: [],
+    }, errors);
+  }
+
+  const written: Array<{ task_id: string; blocks_task_id: string }> = [];
+  if (input.remove) {
+    for (const e of edges) {
+      await sql`
+        delete from task_dependencies
+         where task_id = ${e.task_id} and blocks_task_id = ${e.blocks_task_id}`;
+      written.push(e);
+    }
+  } else {
+    // One edge at a time, each in its own statement, so a cycle rejection names
+    // the edge that caused it instead of failing the whole batch anonymously.
+    for (const e of edges) {
+      try {
+        await sql`
+          insert into task_dependencies (task_id, blocks_task_id)
+          values (${e.task_id}, ${e.blocks_task_id})
+          on conflict do nothing`;
+        written.push(e);
+      } catch (err) {
+        if (isCycleRejection(err)) {
+          errors.push({
+            code: 'cycle',
+            message: `that edge would close a dependency loop, so it was refused: ${
+              err instanceof Error ? err.message : String(err)
+            }`,
+            subjects: [e.task_id, e.blocks_task_id],
+          });
+        } else {
+          throw err;
+        }
+      }
+    }
+  }
+
+  await recordReceipt(sql, {
+    key: input.idempotency_key,
+    actor: ACTOR,
+    verb: input.remove ? 'unlinked_tasks' : 'linked_tasks',
+    workspace_id: workspaceId,
+    result: { written: written.length, edges: written },
+  });
+
+  // The point of adding edges is coverage, so say what it did to coverage.
+  const touched = [...new Set(written.flatMap((e) => [e.task_id, e.blocks_task_id]))];
+  const milestones = touched.length
+    ? await sql<Array<{ name: string; covered: number; total: number }>>`
+        select m.name,
+               count(*) filter (where exists (
+                 select 1 from task_dependencies d where d.task_id = t.id))::int as covered,
+               count(*)::int as total
+          from tasks t join milestones m on m.id = t.milestone_id
+         where t.workspace_id = ${workspaceId}
+           and t.milestone_id in (
+             select milestone_id from tasks
+              where id in ${sql(touched)} and milestone_id is not null)
+           and t.criticality in ('blocking', 'enabling')
+           and t.status not in ('done', 'killed')
+         group by m.name`
+    : [];
+
+  const notes: string[] = [];
+  for (const m of milestones) {
+    const pct = m.total === 0 ? 0 : Math.round((m.covered / m.total) * 100);
+    notes.push(
+      pct >= 60
+        ? `${m.name}: ${pct}% of its open blocking work now has dependency edges, so its slack is trusted`
+        : `${m.name}: still only ${pct}% covered, so its slack stays suppressed until more edges exist`,
+    );
+  }
+
+  return envelope(plainConfidence(notes), { written: written.length, edges: written }, errors);
 }

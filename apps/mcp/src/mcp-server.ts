@@ -2,7 +2,8 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import { INSTRUCTIONS } from './instructions.js';
 import { listSuggestions, resolveSuggestion, suggestImprovement } from './feedback.js';
-import { closeMany, killTask, reopenTask, snoozeTask, updateTask } from './edit.js';
+import { closeMany, killTask, linkTasks, reopenTask, snoozeTask, updateTask } from './edit.js';
+import { getContext } from './context.js';
 import {
   createPerson,
   deleteMilestone,
@@ -423,6 +424,50 @@ export function buildServer(sql: Sql): McpServer {
   // -------------------------------------------------------------------------
   // The system could create work and complete it and nothing in between, so
   // every mistake was permanent. These are what make it repairable.
+
+  server.registerTool(
+    'get_context',
+    {
+      title: 'The whole situation, in one call',
+      description:
+        'CALL THIS FIRST, at the start of every session. Ventures with weights and shares, people with their working weeks and current load, active milestones with slack and coverage, the week and its deficit, inbox and triage counts, and an `unknown` list of what the system has NOT been told. It exists so a session starts already knowing the situation instead of rebuilding it by asking. Everything here was reachable before; it just took six calls.',
+      annotations: { readOnlyHint: true },
+      inputSchema: {
+        available_hours: z
+          .number()
+          .min(0)
+          .optional()
+          .describe(
+            'This week specifically. Omitted, it uses the normal week on record; with neither, the week is reported as unknown rather than assumed.',
+          ),
+      },
+    },
+    async (args) => guard(() => getContext(sql, args)),
+  );
+
+  server.registerTool(
+    'link_tasks',
+    {
+      title: 'Wire dependency edges between existing tasks',
+      description:
+        'Add (or with remove:true, delete) dependency edges between tasks that ALREADY EXIST. commit_tasks can only resolve depends_on/blocks among tasks in the same call, so work added later could never join a chain created earlier — which leaves the milestone below the 60% coverage threshold and its slack suppressed. Accepts ids or exact titles; an ambiguous title is refused rather than guessed, because wiring the wrong critical path is invisible afterwards. Reports what it did to each affected milestone\'s coverage.',
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true },
+      inputSchema: {
+        links: z
+          .array(
+            z.object({
+              task: z.string().describe('Task id, or its exact title.'),
+              blocks: z.array(z.string()).optional().describe('Tasks this one must precede.'),
+              depends_on: z.array(z.string()).optional().describe('Tasks that must finish first.'),
+            }),
+          )
+          .min(1),
+        remove: z.boolean().optional().describe('Delete these edges instead of adding them.'),
+        idempotency_key: z.string().optional(),
+      },
+    },
+    async (args) => guard(() => linkTasks(sql, args)),
+  );
 
   server.registerTool(
     'update_task',

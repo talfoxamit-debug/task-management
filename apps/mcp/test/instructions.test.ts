@@ -78,10 +78,21 @@ describe('the agent instructions', () => {
     expect(INSTRUCTIONS).toContain('do not');
   });
 
+  it('tell the agent to load the situation before asking about it', () => {
+    expect(INSTRUCTIONS).toContain('CALL get_context() FIRST');
+    // The point of the unknown list is that it is asked about, not filled in.
+    expect(INSTRUCTIONS).toContain('do not fill any of it in from guesswork');
+  });
+
+  it('name link_tasks as the way to join an existing chain', () => {
+    expect(INSTRUCTIONS).toContain('link_tasks');
+    expect(INSTRUCTIONS).toContain('IN THAT CALL');
+  });
+
   it('stay short enough to survive a context window', () => {
     // Guidance nobody reads is guidance that does not exist. This is roughly
     // 1.5k tokens; well past that and it competes with the conversation.
-    expect(INSTRUCTIONS.length).toBeLessThan(11000);
+    expect(INSTRUCTIONS.length).toBeLessThan(13000);
     expect(INSTRUCTIONS.length).toBeGreaterThan(2000);
   });
 });

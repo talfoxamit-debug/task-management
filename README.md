@@ -187,6 +187,8 @@ Then, through Claude: *"I have about 25 hours this week — what's going to slip
 | `suggest_improvement(...)` | An agent tells Tal what this system is missing. |
 | `list_suggestions(filter)` | What has been reported, worst and most-repeated first. |
 | `resolve_suggestion(id, ...)` | Tal marks something planned, built or declined. |
+| `get_context()` | **Call this first.** The whole situation in one call, plus what it does *not* know. |
+| `link_tasks(links[])` | Dependency edges between tasks that already exist. |
 | `update_task(...)` | Change fields on an existing task. Null clears, absent leaves alone. |
 | `kill_task(id, reason)` | It should never have been on the list. Not the same as done. |
 | `reopen_task(id)` | Undo a close, clearing the recorded actual. |
@@ -290,6 +292,26 @@ would make the endpoint a free way for anyone to drive the bot.
 Files over 20MB are refused because Telegram will not serve them to a bot, and
 files over 5MB are pointed at `create_upload_link` instead. The reply says which.
 
+## get_context, and why it exists
+
+Every number `get_context()` returns was already reachable — in about six calls
+and a conversation. That was the problem. Each session began by rebuilding the
+same picture from scratch, so the person spent their time teaching the system
+rather than being helped by it.
+
+It returns the ventures with their weights and shares, the people with their
+working weeks and current load, the active milestones with slack and coverage,
+the week and its deficit, and — the part that matters most — an **`unknown`**
+list of what the system has not been told. Someone's working week that was never
+stated, a milestone attached to an inactive venture, a milestone with no tasks
+on it. The instructions tell agents to read that list and ask, never to fill it
+in from guesswork.
+
+It also reports **delegated capacity**: the sum of everyone's stated hours. In a
+system where one person has ~28 usable hours behind ~48 hours of execution
+capacity, that ratio is the whole shape of the problem, and it took a manual
+tally to see.
+
 ## Correction
 
 The first sixteen tools could **create** and **complete** and nothing in
@@ -311,6 +333,15 @@ recorded actual by default for the same reason.
 **`delete_milestone` refuses by default when tasks are attached**, returning the
 count and the ids. Detaching work silently is how a critical path disappears
 without anyone noticing.
+
+**`link_tasks` closes a gap that quietly cost coverage.** `commit_tasks`
+resolves `depends_on` and `blocks` by title, but only among the tasks in that
+same call — so work added after a chain existed could never join it. Adding five
+tasks to a milestone without edges *lowers* its coverage, and under 60% the
+engine suppresses its slack entirely. `link_tasks` takes ids or exact titles,
+refuses an ambiguous title rather than guessing (wiring the wrong critical path
+is invisible afterwards), and reports what it did to each affected milestone's
+coverage.
 
 **`list_milestones` flags the two conditions that make a slip ranking read as
 nonsense**: an active milestone with no attached tasks, which frees nothing when
