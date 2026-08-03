@@ -693,6 +693,20 @@ export async function capacity(
   const pipeline = runEngine(portfolio);
   const result = runCapacity(portfolio, pipeline, input.available_hours);
 
+  // The rate the engine compares against a weekly capacity is correct but hard
+  // to act on. These two are the ingredients behind it: how much work is
+  // actually left, and how long there is to do it. Reported alongside, never
+  // instead of.
+  const totalRequiredHours =
+    pipeline.demand.milestoneDetail.reduce(
+      (sum, d) => sum + d.blockingMinutes + d.enablingMinutes,
+      0,
+    ) / 60;
+  const horizonDays = pipeline.demand.milestoneDetail.reduce(
+    (max, d) => Math.max(max, Math.round(d.weeksUntilRaw * 7)),
+    0,
+  );
+
   const ventureBySlug = new Map(portfolio.ventures.map((v) => [v.id, v.slug]));
   const shares = portfolio.ventures
     .filter((v) => v.active)
@@ -718,6 +732,15 @@ export async function capacity(
       cost_of_slip: c.cost_of_slip,
       min_slack_days: c.minSlack,
       hours_freed_per_week: r1(c.hoursFreed),
+      hours_freed_total: r1(
+        pipeline.demand.milestoneDetail.find((d) => d.milestone_id === c.milestone_id)
+          ? (pipeline.demand.milestoneDetail.find((d) => d.milestone_id === c.milestone_id)!
+              .blockingMinutes +
+              pipeline.demand.milestoneDetail.find((d) => d.milestone_id === c.milestone_id)!
+                .enablingMinutes) /
+              60
+          : 0,
+      ),
       cumulative_hours_freed: r1(c.cumulativeHoursFreed),
       clears_deficit: c.clearsDeficit,
     })),
@@ -747,8 +770,24 @@ export async function capacity(
         buffer: r1(result.bufferHours),
         buffer_ratio: result.bufferRatio,
         usable: r1(result.usableHours),
+        // A RATE, per week. Deliberately NOT capped at usable.
+        //
+        // When a milestone is four days out, its remaining work divided by its
+        // window is a large weekly rate, and that number is arithmetically
+        // correct: 38 hours in 4 days really is ~66 h/wk. It looks like
+        // inflation and is not. Capping it at usable would drive the deficit to
+        // zero and hide a real fire, so the fix is to publish the raw
+        // ingredients beside it rather than to flatten it.
         required: r1(result.requiredHours),
+        // The ingredients. total is the actual remaining work; horizon_days is
+        // the window it has to happen in. Those two are what a person can act
+        // on; the rate is what the engine compares against a weekly capacity.
+        required_hours_total: r1(totalRequiredHours),
+        horizon_days: horizonDays,
         deficit: r1(result.deficitHours),
+        deficit_hours_total: r1(
+          Math.max(0, totalRequiredHours - (result.usableHours * horizonDays) / 7),
+        ),
         surplus: r1(result.surplusHours),
       },
       shares,
@@ -1151,6 +1190,12 @@ export async function close(
       `;
       calibration = { ratio, sample_n: n };
     }
+
+    // Flex is spent by DOING. Recorded here, on close, and never in
+    // next_actions -- a budget consumed by asking what to do would be gone
+    // before any of it was worked.
+    const { recordFlexSpend } = await import('./next-actions.js');
+    await recordFlexSpend(tx as unknown as Sql, workspaceId, task.id, actual);
 
     await recordReceipt(tx, {
       key: input.idempotency_key,

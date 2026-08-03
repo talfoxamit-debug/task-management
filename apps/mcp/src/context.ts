@@ -109,6 +109,16 @@ export async function getContext(
           and c.author_kind = 'delegate' and c.read_by_owner_at is null)::int as unread
       from tasks where workspace_id = ${workspaceId}`;
 
+  const dayRows = await sql<
+    Array<{ day_of_week: number; slug: string | null; flex_minutes: number; is_working_day: boolean }>
+  >`
+    select a.day_of_week, v.slug, a.flex_minutes, a.is_working_day
+      from day_allocation a
+      left join ventures v on v.id = a.primary_venture_id
+     where a.workspace_id = ${workspaceId}
+     order by a.day_of_week`;
+  const DAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+
   // Everything the system genuinely does not know, said once, so the session
   // does not have to discover each gap by tripping over it.
   const unknown: string[] = [];
@@ -125,6 +135,11 @@ export async function getContext(
   for (const m of orphaned) {
     unknown.push(
       `"${m.name}" belongs to an inactive venture, so its demand is silently not counted`,
+    );
+  }
+  if (dayRows.length === 0) {
+    unknown.push(
+      'which venture owns which day — set_day_allocation, or every day treats every venture equally',
     );
   }
   const bare = milestones.filter((m) => m.attached_tasks === 0);
@@ -172,6 +187,13 @@ export async function getContext(
             }
           : {}),
       },
+      day_allocation: dayRows.map((d) => ({
+        day_of_week: d.day_of_week,
+        day: DAY_NAMES[d.day_of_week],
+        primary_venture: d.slug,
+        flex_minutes: d.flex_minutes,
+        is_working_day: d.is_working_day,
+      })),
       ventures,
       people: people.map((p) => ({
         name: p.name,

@@ -189,6 +189,8 @@ Then, through Claude: *"I have about 25 hours this week — what's going to slip
 | `resolve_suggestion(id, ...)` | Tal marks something planned, built or declined. |
 | `get_context()` | **Call this first.** The whole situation in one call, plus what it does *not* know. |
 | `link_tasks(links[])` | Dependency edges between tasks that already exist. |
+| `next_actions(available_minutes, ...)` | What to pick up in the slot you actually have. |
+| `set_day_allocation` / `get_day_allocation` | Which venture owns which day, and its flex budget. |
 | `update_task(...)` | Change fields on an existing task. Null clears, absent leaves alone. |
 | `kill_task(id, reason)` | It should never have been on the list. Not the same as done. |
 | `reopen_task(id)` | Undo a close, clearing the recorded actual. |
@@ -291,6 +293,59 @@ would make the endpoint a free way for anyone to drive the bot.
 
 Files over 20MB are refused because Telegram will not serve them to a bot, and
 files over 5MB are pointed at `create_upload_link` instead. The reply says which.
+
+## next_actions, and the four rules in it
+
+Every task already carried `context`, `energy` and `estimate_minutes`, and
+nothing read them. `list_tasks` returns one global ranking, so at 2pm with
+ninety minutes and no energy left, the top of the list was a 720-minute
+`deep_work` task — correct as a ranking, useless as an answer.
+
+Four rules, and the reasoning matters more than the code:
+
+1. **A task with open blockers is excluded, not down-ranked.** Suggesting work
+   that cannot be started is the fastest way to make a list untrustworthy.
+2. **Energy is a hard constraint; context is a soft one.** Mismatched energy
+   produces bad work, which has to be redone. Mismatched context produces slow
+   work, which merely costs time. So low energy excludes high-energy tasks
+   outright, while a context mismatch only lowers the ranking.
+3. **A task bigger than the slot is still returned**, marked `partial` with a
+   suggested chunk. The 720-minute item is often the most important thing in the
+   system, and a size filter makes it permanently invisible — the more it
+   matters, the bigger it is, the less it would ever be suggested.
+4. **Every action carries a one-line `why`.** A ranked list without reasoning is
+   a list; with it, it is a recommendation somebody can disagree with.
+
+### The day allocation
+
+Whole days belong to ventures. That rule lived only in conversation and had
+already caused planning errors. `day_allocation` records it, with a **flex**
+budget per day — because a Seatop day still has to absorb the Yathub thing that
+catches fire, and a rule with no give is abandoned the first time it is
+inconvenient.
+
+Two properties that make it survive contact with a real week:
+
+- **Flex is spent by closing off-plan work, never by asking what to do.** A
+  budget consumed by the question would be gone before any of it was worked.
+- **Negative slack surfaces even at zero flex**, flagged `flex_exceeded`. Never
+  hide a fire behind a budget.
+
+No rollover: unspent flex does not accumulate into a licence to spend a whole
+day off-plan later.
+
+## On required hours being a rate
+
+`capacity()` reports `required` as hours **per week**, and it is not capped at
+`usable`. When a milestone is four days out, its remaining work over its window
+is a large weekly rate — 38 hours in 4 days really is ~66 h/wk. That looks like
+inflation and is not: the arithmetic is right, and capping the rate at `usable`
+would drive the deficit to zero and report a comfortable week during a fire.
+
+The fix is to publish the ingredients beside it rather than flatten it:
+`required_hours_total`, `horizon_days` and `deficit_hours_total`, plus
+`hours_freed_total` on each slip candidate. The totals are what a person can act
+on; the rate is what the engine compares against a weekly capacity.
 
 ## get_context, and why it exists
 

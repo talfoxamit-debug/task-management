@@ -89,10 +89,20 @@ describe('the agent instructions', () => {
     expect(INSTRUCTIONS).toContain('IN THAT CALL');
   });
 
+  it('name next_actions as the answer to "what should I do now"', () => {
+    expect(INSTRUCTIONS).toContain('next_actions');
+    expect(INSTRUCTIONS).toContain('hard ceiling');
+  });
+
+  it('explain that the required rate is not inflation', () => {
+    expect(INSTRUCTIONS).toContain('required_hours_total');
+    expect(INSTRUCTIONS).toContain('not capped');
+  });
+
   it('stay short enough to survive a context window', () => {
     // Guidance nobody reads is guidance that does not exist. This is roughly
     // 1.5k tokens; well past that and it competes with the conversation.
-    expect(INSTRUCTIONS.length).toBeLessThan(13000);
+    expect(INSTRUCTIONS.length).toBeLessThan(15000);
     expect(INSTRUCTIONS.length).toBeGreaterThan(2000);
   });
 });

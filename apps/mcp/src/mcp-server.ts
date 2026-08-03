@@ -4,6 +4,7 @@ import { INSTRUCTIONS } from './instructions.js';
 import { listSuggestions, resolveSuggestion, suggestImprovement } from './feedback.js';
 import { closeMany, killTask, linkTasks, reopenTask, snoozeTask, updateTask } from './edit.js';
 import { getContext } from './context.js';
+import { getDayAllocation, nextActions, setDayAllocation } from './next-actions.js';
 import {
   createPerson,
   deleteMilestone,
@@ -443,6 +444,63 @@ export function buildServer(sql: Sql): McpServer {
       },
     },
     async (args) => guard(() => getContext(sql, args)),
+  );
+
+  server.registerTool(
+    'next_actions',
+    {
+      title: 'What to pick up in the slot you actually have',
+      description:
+        'THE tool for "what should I do now". Takes the minutes available and optionally your energy and context. NEVER returns a task whose blockers are still open. Energy is a HARD filter (mismatched energy produces work that has to be redone); context is a soft preference (mismatched context only costs time). A task bigger than the slot is still returned, marked partial with a suggested chunk, because a size filter makes the biggest and most important work permanently invisible. Every action carries a one-line `why`.',
+      annotations: { readOnlyHint: true },
+      inputSchema: {
+        available_minutes: z.number().int().positive().describe('The real slot, right now.'),
+        context: context.optional().describe('Preferred, not required.'),
+        energy: energy.optional().describe('A hard ceiling: low excludes high-energy work.'),
+        date: civilDate.optional(),
+        limit: z.number().int().min(1).max(15).optional(),
+        ignore_day_allocation: z
+          .boolean()
+          .optional()
+          .describe('Ignore whose day it is. Use when Tal says today is different.'),
+      },
+    },
+    async (args) => guard(() => nextActions(sql, args)),
+  );
+
+  server.registerTool(
+    'set_day_allocation',
+    {
+      title: 'Which venture owns which day',
+      description:
+        'Record the weekly shape: which venture each day belongs to, how many minutes of flex it can give other ventures, and which days are not worked. 0 = Sunday. Flex is spent by CLOSING off-plan work, never by asking what to do, and does not roll over.',
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true },
+      inputSchema: {
+        days: z
+          .array(
+            z.object({
+              day_of_week: z.number().int().min(0).max(6).describe('0 = Sunday.'),
+              venture: z.string().nullable().optional().describe('Slug or name; null for none.'),
+              flex_minutes: z.number().int().min(0).optional().describe('Default 90.'),
+              is_working_day: z.boolean().optional(),
+              note: z.string().optional(),
+            }),
+          )
+          .min(1),
+      },
+    },
+    async (args) => guard(() => setDayAllocation(sql, args)),
+  );
+
+  server.registerTool(
+    'get_day_allocation',
+    {
+      title: 'The weekly shape',
+      description: 'Which venture owns each day, its flex budget, and which days are not worked.',
+      annotations: { readOnlyHint: true },
+      inputSchema: {},
+    },
+    async (args) => guard(() => getDayAllocation(sql, args)),
   );
 
   server.registerTool(
