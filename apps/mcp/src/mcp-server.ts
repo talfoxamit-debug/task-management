@@ -11,7 +11,9 @@ import {
   deleteOutcomeTarget,
   listMilestones,
   listPeople,
+  listProjects,
   listVentures,
+  setProject,
   setVenture,
 } from './registry.js';
 import type { Sql } from './db.js';
@@ -678,6 +680,41 @@ export function buildServer(sql: Sql): McpServer {
       },
     },
     async (args) => guard(() => setVenture(sql, args)),
+  );
+
+  server.registerTool(
+    'list_projects',
+    {
+      title: 'The projects, and what is actually moving in them',
+      description:
+        'Every project with its venture, its stated outcome, open task count and hours, and when it last moved. Flags active projects with no open tasks (nothing is going to happen in them) and ones that have not moved in a fortnight. Answers "what are my projects and what is in each one".',
+      annotations: { readOnlyHint: true },
+      inputSchema: {
+        venture: z.string().optional(),
+        status: z.enum(['active', 'paused', 'done', 'killed']).optional(),
+      },
+    },
+    async (args) => guard(() => listProjects(sql, args)),
+  );
+
+  server.registerTool(
+    'set_project',
+    {
+      title: 'Create or change a project',
+      description:
+        'A body of work inside a venture, with an OUTCOME — what is true when it is finished. commit_tasks and update_task accept a project by name and refuse an unknown one, so this is what makes that field usable. State the outcome: a project without one is a folder, and a folder cannot be finished.',
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true },
+      inputSchema: {
+        name: z.string().min(1),
+        venture: z.string().describe('Slug or name.'),
+        outcome: z.string().optional().describe('What is true when this is done.'),
+        milestone: z.string().nullable().optional().describe('The milestone it serves, if any.'),
+        status: z.enum(['active', 'paused', 'done', 'killed']).optional(),
+        new_name: z.string().optional().describe('Rename it.'),
+        idempotency_key: z.string().optional(),
+      },
+    },
+    async (args) => guard(() => setProject(sql, args)),
   );
 
   server.registerTool(

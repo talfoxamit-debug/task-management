@@ -486,3 +486,193 @@ export async function deleteOutcomeTarget(
 
   return envelope(plainConfidence([]), { deleted: true, outcome_target: found[0] });
 }
+
+// ---------------------------------------------------------------------------
+// Projects
+// ---------------------------------------------------------------------------
+
+/**
+ * Projects existed in the schema and were unreachable.
+ *
+ * commit_tasks accepts a `project` and correctly refuses an unknown one, but
+ * nothing could create or list them — so the field was permanently unusable and
+ * "what are my projects?" had no answer at all. The same shape of hole
+ * create_person filled for assignees.
+ */
+export async function setProject(
+  sql: Sql,
+  input: {
+    name: string;
+    venture: string;
+    outcome?: string;
+    milestone?: string | null;
+    status?: 'active' | 'paused' | 'done' | 'killed';
+    new_name?: string;
+    idempotency_key?: string;
+  },
+): Promise<ToolEnvelope> {
+  const replay = await findReplay(sql, input.idempotency_key);
+  if (replay) {
+    return envelope(plainConfidence(['replayed: nothing was written']), {
+      ...(replay.result as Record<string, unknown>),
+      replayed: true,
+    });
+  }
+
+  const workspaceId = await resolveWorkspaceId(sql);
+  const ventures = await sql<Array<{ id: string; slug: string }>>`
+    select id, slug from ventures where workspace_id = ${workspaceId}
+      and (slug = ${input.venture} or name = ${input.venture}) limit 1`;
+  if (!ventures[0]) {
+    const known = await sql<Array<{ slug: string }>>`
+      select slug from ventures where workspace_id = ${workspaceId} order by slug`;
+    return envelope(plainConfidence([]), { project: null }, [
+      {
+        code: 'unknown_venture',
+        message: `venture "${input.venture}" does not exist — nothing was written. Known: ${known
+          .map((k) => k.slug)
+          .join(', ')}`,
+      },
+    ]);
+  }
+  const ventureId = ventures[0].id;
+
+  let milestoneId: string | null = null;
+  if (input.milestone) {
+    const rows = await sql<Array<{ id: string }>>`
+      select id from milestones where workspace_id = ${workspaceId}
+        and venture_id = ${ventureId} and name = ${input.milestone} limit 1`;
+    if (!rows[0]) {
+      return envelope(plainConfidence([]), { project: null }, [
+        {
+          code: 'unknown_milestone',
+          message: `milestone "${input.milestone}" does not exist in ${ventures[0].slug} — nothing was written`,
+        },
+      ]);
+    }
+    milestoneId = rows[0].id;
+  }
+
+  const existing = await sql<Array<{ id: string }>>`
+    select id from projects where workspace_id = ${workspaceId}
+      and venture_id = ${ventureId} and name = ${input.name} limit 1`;
+
+  // outcome is NOT NULL and is the field that makes a project mean something:
+  // a project with no stated outcome is a folder, and a folder cannot be
+  // finished. Defaulted rather than refused, but the note says so.
+  const outcome = input.outcome ?? `(outcome not stated for "${input.name}")`;
+
+  const rows = existing[0]
+    ? await sql<Array<{ id: string; name: string }>>`
+        update projects
+           set name = coalesce(${input.new_name ?? null}, name),
+               outcome = coalesce(${input.outcome ?? null}, outcome),
+               milestone_id = ${input.milestone === null ? null : (milestoneId ?? sql`milestone_id`)},
+               status = coalesce(${input.status ?? null}, status)
+         where id = ${existing[0].id}
+         returning id, name`
+    : await sql<Array<{ id: string; name: string }>>`
+        insert into projects (workspace_id, venture_id, milestone_id, name, outcome, status)
+        values (${workspaceId}, ${ventureId}, ${milestoneId}, ${input.new_name ?? input.name},
+                ${outcome}, ${input.status ?? 'active'})
+        returning id, name`;
+
+  await recordReceipt(sql, {
+    key: input.idempotency_key,
+    actor: ACTOR,
+    verb: existing[0] ? 'updated_project' : 'created_project',
+    workspace_id: workspaceId,
+    venture_id: ventureId,
+    result: { id: rows[0]!.id, name: rows[0]!.name },
+  });
+
+  return envelope(
+    plainConfidence(
+      input.outcome === undefined && !existing[0]
+        ? [
+            'no outcome was stated, so one was placeholdered: a project without an outcome is a folder, and a folder cannot be finished',
+          ]
+        : [],
+    ),
+    {
+      project: { id: rows[0]!.id, name: rows[0]!.name, venture: ventures[0].slug },
+      created: !existing[0],
+    },
+  );
+}
+
+export async function listProjects(
+  sql: Sql,
+  input: { venture?: string; status?: string },
+): Promise<ToolEnvelope> {
+  const workspaceId = await resolveWorkspaceId(sql);
+  const rows = await sql<
+    Array<{
+      id: string;
+      name: string;
+      outcome: string;
+      status: string;
+      venture: string;
+      milestone: string | null;
+      open_tasks: number;
+      open_minutes: number;
+      done_tasks: number;
+      last_movement_at: Date | null;
+    }>
+  >`
+    select p.id, p.name, p.outcome, p.status, v.slug as venture, m.name as milestone,
+           count(t.id) filter (where t.status not in ('done','killed'))::int as open_tasks,
+           coalesce(sum(t.estimate_minutes) filter
+             (where t.status not in ('done','killed')), 0)::int as open_minutes,
+           count(t.id) filter (where t.status = 'done')::int as done_tasks,
+           p.last_movement_at
+      from projects p
+      join ventures v on v.id = p.venture_id
+      left join milestones m on m.id = p.milestone_id
+      left join tasks t on t.project_id = p.id
+     where p.workspace_id = ${workspaceId}
+       ${input.venture ? sql`and (v.slug = ${input.venture} or v.name = ${input.venture})` : sql``}
+       ${input.status ? sql`and p.status = ${input.status}` : sql``}
+     group by p.id, v.slug, m.name
+     order by v.slug, p.name`;
+
+  const notes: string[] = [];
+  const stale = rows.filter(
+    (r) =>
+      r.status === 'active' &&
+      r.last_movement_at !== null &&
+      Date.now() - r.last_movement_at.getTime() > 14 * 24 * 3600 * 1000,
+  );
+  if (stale.length > 0) {
+    notes.push(
+      `${stale.length} active project(s) have not moved in over two weeks: ${stale.map((s) => s.name).join('; ')}`,
+    );
+  }
+  const empty = rows.filter((r) => r.status === 'active' && r.open_tasks === 0);
+  if (empty.length > 0) {
+    notes.push(
+      `${empty.length} active project(s) have no open tasks, so nothing is going to happen in them: ${empty.map((e) => e.name).join('; ')}`,
+    );
+  }
+
+  const list = narrow(
+    rows.map((r) => ({
+      id: r.id,
+      name: r.name,
+      venture: r.venture,
+      outcome: r.outcome,
+      milestone: r.milestone,
+      status: r.status,
+      open_tasks: r.open_tasks,
+      open_hours: Math.round((r.open_minutes / 60) * 10) / 10,
+      done_tasks: r.done_tasks,
+      last_movement: r.last_movement_at ? r.last_movement_at.toISOString().slice(0, 10) : null,
+    })),
+  );
+
+  return envelope(plainConfidence(notes), {
+    projects: list.items,
+    total: list.total,
+    ...(list.truncated ? { truncated: list.truncated } : {}),
+  });
+}

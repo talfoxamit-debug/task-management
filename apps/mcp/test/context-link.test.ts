@@ -241,3 +241,61 @@ describe('get_context', () => {
     expect(res.confidence.notes[0]).toContain('must not be assumed');
   });
 });
+
+describe('projects', () => {
+  /**
+   * Projects existed in the schema and were unreachable: commit_tasks accepts a
+   * project and refuses an unknown one, but nothing could create or list them,
+   * so "what are my projects?" had no answer and the field was dead.
+   */
+  it('creates one and makes the commit_tasks field usable', async () => {
+    const { listProjects, setProject } = await import('../src/registry.js');
+    const made = await setProject(sql, {
+      name: 'Discovery pipeline',
+      venture: 'seatop',
+      outcome: 'A buyer can go from first call to signed agreement without me chasing',
+      idempotency_key: 'pr-1',
+    });
+    expect(made.ok).toBe(true);
+    expect(made['created']).toBe(true);
+
+    const res = await commitTasks(sql, {
+      tasks: [{ title: 'Inside a project', venture: 'seatop', project: 'Discovery pipeline' }],
+      idempotency_key: 'pr-task',
+    });
+    expect(res.ok).toBe(true);
+
+    const listed = await listProjects(sql, {});
+    const p = (listed['projects'] as Array<{ name: string; open_tasks: number }>).find(
+      (x) => x.name === 'Discovery pipeline',
+    )!;
+    expect(p.open_tasks).toBe(1);
+  });
+
+  it('says when a project has no outcome, because then it is only a folder', async () => {
+    const { setProject } = await import('../src/registry.js');
+    const res = await setProject(sql, {
+      name: 'Vague thing',
+      venture: 'seatop',
+      idempotency_key: 'pr-2',
+    });
+    expect(res.confidence.notes.join(' ')).toContain('a folder cannot be finished');
+  });
+
+  it('flags an active project with no open tasks', async () => {
+    const { listProjects } = await import('../src/registry.js');
+    const res = await listProjects(sql, {});
+    // Nothing is going to happen in a project with nothing in it, and that is
+    // invisible unless something says so.
+    expect(res.confidence.notes.join(' ')).toContain('no open tasks');
+    expect(res.confidence.notes.join(' ')).toContain('Vague thing');
+  });
+
+  it('names the known ventures when the venture is wrong', async () => {
+    const { setProject } = await import('../src/registry.js');
+    const res = await setProject(sql, { name: 'x', venture: 'nope' });
+    expect(res.ok).toBe(false);
+    expect(res.errors?.[0]?.message).toContain('nothing was written');
+    expect(res.errors?.[0]?.message).toContain('seatop');
+  });
+});
