@@ -386,6 +386,145 @@ export async function listMilestones(
  * silently is how a critical path disappears without anyone noticing. The count
  * and the ids come back so the caller can decide rather than guess.
  */
+/**
+ * Move a milestone to a different venture.
+ *
+ * set_milestone cannot do this and never could: it keys on (venture_id, name),
+ * so naming a different venture creates a SECOND milestone with the same name
+ * and leaves the tasks on the first. That is how a real tax milestone ended up
+ * parked on the `unsorted` holding venture, where its demand was silently not
+ * counted at all — an inactive venture contributes nothing to the week, so the
+ * work existed and the system said the week was fine.
+ *
+ * The attached tasks move with it by default. A task carries its own venture_id
+ * and that is what allocates its hours, so a milestone in YachtyHub whose tasks
+ * are all filed under `unsorted` reports demand against a venture that is not
+ * doing the work, and every share downstream is wrong.
+ */
+export async function moveMilestone(
+  sql: Sql,
+  input: {
+    milestone_id: string;
+    venture: string;
+    move_tasks?: boolean;
+    idempotency_key?: string;
+  },
+): Promise<ToolEnvelope> {
+  const replay = await findReplay(sql, input.idempotency_key);
+  if (replay) {
+    return envelope(plainConfidence(['replayed: nothing was written']), {
+      ...(replay.result as Record<string, unknown>),
+      replayed: true,
+    });
+  }
+
+  const workspaceId = await resolveWorkspaceId(sql);
+
+  const rows = await sql<
+    Array<{ id: string; name: string; venture_id: string; from_venture: string; status: string }>
+  >`
+    select m.id, m.name, m.venture_id, v.name as from_venture, m.status
+      from milestones m join ventures v on v.id = m.venture_id
+     where m.id = ${input.milestone_id} and m.workspace_id = ${workspaceId}`;
+  const milestone = rows[0];
+  if (!milestone) {
+    return envelope(plainConfidence([]), { moved: false }, [
+      {
+        code: 'not_found',
+        message: `milestone ${input.milestone_id} does not exist — nothing was written. list_milestones has the ids.`,
+      },
+    ]);
+  }
+
+  const ventures = await sql<Array<{ id: string; name: string; slug: string; active: boolean }>>`
+    select id, name, slug, active from ventures
+     where workspace_id = ${workspaceId} and (slug = ${input.venture} or name = ${input.venture})
+     limit 1`;
+  const target = ventures[0];
+  if (!target) {
+    const known = await sql<Array<{ slug: string }>>`
+      select slug from ventures where workspace_id = ${workspaceId} order by slug`;
+    return envelope(plainConfidence([]), { moved: false }, [
+      {
+        code: 'missing_venture',
+        message: `venture "${input.venture}" does not exist — nothing was written. Known: ${known
+          .map((k) => k.slug)
+          .join(', ')}`,
+      },
+    ]);
+  }
+
+  if (target.id === milestone.venture_id) {
+    return envelope(
+      plainConfidence([`it is already on ${target.name}; nothing to do`]),
+      { moved: false, milestone: milestone.name, venture: target.name },
+    );
+  }
+
+  // A name collision would give the target venture two milestones called the
+  // same thing, and set_milestone would then update whichever it found first.
+  const clash = await sql<Array<{ id: string }>>`
+    select id from milestones
+     where workspace_id = ${workspaceId} and venture_id = ${target.id}
+       and name = ${milestone.name} and id <> ${milestone.id}`;
+  if (clash.length > 0) {
+    return envelope(plainConfidence([]), { moved: false }, [
+      {
+        code: 'name_taken',
+        message: `${target.name} already has a milestone called "${milestone.name}" — nothing was written. Rename one of them first.`,
+      },
+    ]);
+  }
+
+  const moveTasks = input.move_tasks ?? true;
+
+  const result = await sql.begin(async (tx) => {
+    await tx`
+      update milestones set venture_id = ${target.id}
+       where id = ${milestone.id} and workspace_id = ${workspaceId}`;
+
+    const touched = moveTasks
+      ? await tx<Array<{ id: string }>>`
+          update tasks set venture_id = ${target.id}, last_touched_at = now()
+           where workspace_id = ${workspaceId} and milestone_id = ${milestone.id}
+             and venture_id <> ${target.id}
+          returning id`
+      : [];
+
+    await recordReceipt(tx, {
+      key: input.idempotency_key,
+      actor: ACTOR,
+      verb: 'milestone_moved',
+      workspace_id: workspaceId,
+      venture_id: target.id,
+      result: { milestone: milestone.name, to: target.slug, tasks_moved: touched.length },
+    });
+    return touched.length;
+  });
+
+  const notes: string[] = [];
+  if (!target.active) {
+    // The exact condition being fixed, so it cannot be reintroduced silently.
+    notes.push(
+      `${target.name} is INACTIVE: a milestone there drives no demand at all, so its work will not appear in capacity(). Activate it with set_venture, or move this somewhere else.`,
+    );
+  }
+  if (!moveTasks && result === 0) {
+    notes.push(
+      'the attached tasks were left on their old venture, so their hours are counted against it while the milestone is counted here',
+    );
+  }
+  notes.push('run capacity() again: the shares and the slip ranking both change with this');
+
+  return envelope(plainConfidence(notes), {
+    moved: true,
+    milestone: milestone.name,
+    from: milestone.from_venture,
+    to: target.name,
+    tasks_moved: result,
+  });
+}
+
 export async function deleteMilestone(
   sql: Sql,
   input: { milestone_id: string; force?: boolean; idempotency_key?: string },

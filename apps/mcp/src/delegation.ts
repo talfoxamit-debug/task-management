@@ -79,7 +79,19 @@ export interface ResolvedToken {
 
 export type Resolution =
   | { ok: true; token: ResolvedToken }
-  | { ok: false; reason: 'malformed' | 'unknown' | 'revoked' | 'expired' };
+  | { ok: false; reason: 'malformed' | 'unknown' | 'revoked' | 'expired' | 'completed' };
+
+/**
+ * How long a task link outlives the task.
+ *
+ * Tal's rule: one link per task, and the link disappears ninety minutes after
+ * the task is approved. Ninety minutes rather than immediately because the
+ * moment after "done" is exactly when the fifteen-minute undo gets used, when
+ * the receipt gets read, and when somebody adds the note they meant to add
+ * first. A link that dies on the tap turns every mis-tap into a message to Tal,
+ * which is the interruption the whole feature exists to remove.
+ */
+export const APPROVAL_GRACE_MINUTES = 90;
 
 /**
  * Turn a presented token into a person, or refuse.
@@ -89,6 +101,13 @@ export type Resolution =
  * in which an expired link still works because a job has not run yet. An
  * expired row is revoked lazily on the way past, so the partial-unique index
  * stays honest and a dormant person can be re-onboarded.
+ *
+ * The ninety-minute rule is computed from the TASK rather than written onto the
+ * token, and that is the reason undo works. Stamping expires_at at close time
+ * would need the previous value stored somewhere to put back when the close is
+ * undone; deriving it from tasks.closed_at means undoing the close revives the
+ * link with no bookkeeping at all, because there is no longer a closed_at to
+ * measure from.
  */
 export async function resolveToken(sql: Sql, raw: string): Promise<Resolution> {
   if (!looksLikeToken(raw)) return { ok: false, reason: 'malformed' };
@@ -104,14 +123,19 @@ export async function resolveToken(sql: Sql, raw: string): Promise<Resolution> {
       token_hash: string;
       revoked_at: Date | null;
       expired: boolean;
+      completed: boolean;
       superseded_by: string | null;
     }>
   >`
     select t.id, t.workspace_id, t.person_id, p.name as person_name, t.scope, t.task_id,
            t.token_hash, t.revoked_at, t.superseded_by,
-           (t.expires_at is not null and t.expires_at <= now()) as expired
+           (t.expires_at is not null and t.expires_at <= now()) as expired,
+           (t.scope = 'task' and k.status in ('done', 'killed') and k.closed_at is not null
+            and k.closed_at <= now() - ${`${APPROVAL_GRACE_MINUTES} minutes`}::interval)
+             as completed
       from delegation_tokens t
       join people p on p.id = t.person_id
+      left join tasks k on k.id = t.task_id
      where t.token_hash = ${hash(raw)}
      limit 1
   `;
@@ -126,12 +150,13 @@ export async function resolveToken(sql: Sql, raw: string): Promise<Resolution> {
 
   if (row.revoked_at) return { ok: false, reason: 'revoked' };
 
-  if (row.expired) {
+  if (row.expired || row.completed) {
+    const reason = row.completed ? 'completed' : 'expired';
     await sql`
       update delegation_tokens
-         set revoked_at = now(), revoked_reason = coalesce(revoked_reason, 'expired')
+         set revoked_at = now(), revoked_reason = coalesce(revoked_reason, ${reason})
        where id = ${row.id} and revoked_at is null`;
-    return { ok: false, reason: 'expired' };
+    return { ok: false, reason };
   }
 
   // A superseded token still works during its grace window, and its page will
@@ -222,14 +247,31 @@ export async function delegateLink(sql: Sql, input: DelegateLinkInput): Promise<
   let deadline: string | null = null;
   if (scope === 'task') {
     const tasks = await sql<
-      Array<{ id: string; title: string; assignee_person_id: string | null; deadline_date: string | null }>
+      Array<{
+        id: string;
+        title: string;
+        status: string;
+        assignee_person_id: string | null;
+        deadline_date: string | null;
+      }>
     >`
-      select id, title, assignee_person_id, deadline_date::text as deadline_date from tasks
+      select id, title, status, assignee_person_id, deadline_date::text as deadline_date from tasks
        where id = ${input.task_id!} and workspace_id = ${workspaceId} limit 1`;
     const task = tasks[0];
     if (!task) {
       return envelope(plainConfidence([]), { link: null }, [
         { code: 'not_found', message: `task ${input.task_id} does not exist — nothing was written` },
+      ]);
+    }
+    if (task.status === 'done' || task.status === 'killed') {
+      // A link minted for finished work is dead ninety minutes later by the rule
+      // below, so minting it at all just sends somebody a page that says "all
+      // done" — which reads as a broken link rather than as good news.
+      return envelope(plainConfidence([]), { link: null }, [
+        {
+          code: 'already_finished',
+          message: `"${task.title}" is already ${task.status} — nothing was written. Reopen it first if it needs doing again.`,
+        },
       ]);
     }
     if (task.assignee_person_id !== person.id) {
@@ -275,9 +317,15 @@ export async function delegateLink(sql: Sql, input: DelegateLinkInput): Promise<
 
   const { raw, hash: tokenHash, prefix } = mint(scope);
 
-  // Task links die after the work does. Person links are durable by default:
-  // a link that expires mid-sprint generates a support request to a one-man
-  // company, and then nobody uses the feature.
+  // A task link's real expiry is ninety minutes after the work is approved, and
+  // that is enforced in resolveToken against tasks.closed_at rather than stored
+  // here. What is stored is the BACKSTOP for the other ending: work that is
+  // never finished at all, where nothing ever sets closed_at and the credential
+  // would otherwise live forever.
+  //
+  // Person links are durable by default. A link that expires mid-sprint
+  // generates a support request to a one-man company, and then nobody uses the
+  // feature.
   const expiresAt =
     input.expires_in_days !== undefined
       ? sql`now() + ${`${input.expires_in_days} days`}::interval`
@@ -327,6 +375,11 @@ export async function delegateLink(sql: Sql, input: DelegateLinkInput): Promise<
     'this link IS the credential: anyone holding it can see and close that work',
     'only its hash is stored, so it cannot be shown again — rotate to replace it',
   ];
+  notes.push(
+    scope === 'task'
+      ? `one link, one task: it stops working ${APPROVAL_GRACE_MINUTES} minutes after the task is marked done`
+      : `a ${scope} link covers this person's whole queue and does not expire on its own — revoke it when they stop working with you`,
+  );
   if (!publicUrl()) {
     notes.push(
       'TASKOS_PUBLIC_URL is not set, so the path below is relative; set it to the deployment origin',

@@ -91,6 +91,7 @@ psql "$DATABASE_URL" -f supabase/tests/triggers.sql   # ends: ALL TRIGGER TESTS 
 | `DATABASE_URL` | Postgres connection string. On Supabase use the **transaction pooler** (port 6543) — serverless functions open a connection per invocation. |
 | `SUPABASE_URL` | Project URL. Only needed for documents. |
 | `SUPABASE_SERVICE_ROLE_KEY` | Service-role key, for Storage. Server-side only — it bypasses RLS, so it must never reach a browser. |
+| `TASKOS_PUBLIC_URL` | The origin delegation links are built on, e.g. `https://taskos.vercel.app`. Falls back to `VERCEL_PROJECT_PRODUCTION_URL`; without either, `delegate_link` returns a relative path and says so. |
 
 Without the last two the nine core tools work normally and the four document
 tools report that storage is unconfigured, naming the variables. Degraded, not
@@ -200,6 +201,11 @@ Then, through Claude: *"I have about 25 hours this week — what's going to slip
 | `list_milestones` | Everything, including the stale rows nothing else surfaces. |
 | `delete_milestone` / `delete_outcome_target` | Refuses by default when work is attached. |
 | `create_person` / `list_people` | Makes the assignee field usable, and shows delegated load. |
+| `move_milestone(id, venture)` | Move a milestone between ventures, tasks included. `set_milestone` cannot. |
+| `delegate_link(person, ...)` | Mint a secret link to a page where somebody else does the work. |
+| `list_delegation_links` / `revoke_delegation` | What is in circulation, and killing it. |
+| `delegation_inbox(...)` | What came back: comments, and who is blocked and for how long. |
+| `comment_on_task(id, body)` | Tal answering, in the thread the delegate is reading. |
 
 Every response carries a `confidence` object: `{ calibrated, balancingActive,
 coverageByMilestone, notes }`. Read the notes before treating a number as
@@ -293,6 +299,84 @@ would make the endpoint a free way for anyone to drive the bot.
 
 Files over 20MB are refused because Telegram will not serve them to a bot, and
 files over 5MB are pointed at `create_upload_link` instead. The reply says which.
+
+## Delegation
+
+Tal has roughly 28 usable hours a week. Othman and Saar have about 48 between
+them. Moving one task across that line beats any amount of re-ranking, and until
+now assigning a task told the assignee nothing at all.
+
+**The shape: a secret link, no account, no app, no invite.** They open a page,
+see only their own work, mark it done, say what they are stuck on. Nothing runs
+on a schedule, because nothing here needs to.
+
+| route | what it is |
+|---|---|
+| `GET /p/<token>` | A person's whole open queue. |
+| `GET /d/<token>` | One task. |
+| `GET /c/<token>.ics` | A read-only calendar feed that can close nothing. |
+| `POST /p/<token>/close` `…/comment` `…/undo` | The only three state changes a delegate can make. |
+| `GET /p/<token>/task/<id>.ics` | Add-to-calendar for one task. |
+
+**The link IS the credential.** No password, no second factor, because requiring
+either is what stops a collaborator ever using the thing. That trade is only
+acceptable because of how narrow the reach is: exactly one person's own assigned
+work. Not the portfolio, not another person's tasks, not `capacity()`, not the
+slip ranking. A leaked link is a contained incident, not a breach.
+
+**Only the hash is stored.** The plaintext exists once, in the response to
+`delegate_link`, and is never written down again. A database dump, a backup or a
+screenshot of a query yields nothing that works. The cost is that "resend me that
+link" is impossible, which is why rotation has a grace window and is a
+first-class operation rather than an afterthought.
+
+**One link per task, gone 90 minutes after it is approved.** Ninety rather than
+zero because the minute after "done" is exactly when the undo gets used and the
+receipt gets read; a link that dies on the tap turns every mis-tap into a message
+to Tal. The rule is computed from `tasks.closed_at` at read time rather than
+stamped onto the token, and that is what makes undo work: there is nothing to put
+back, because undoing the close removes the thing the ninety minutes was measured
+from. Expiry is enforced on read throughout, which turns "this platform has no
+cron" from a constraint into a property — there is no window in which a dead link
+still works because a job has not run.
+
+**A GET never mutates.** WhatsApp, Telegram, Slack, iMessage and every mail
+scanner fetch a URL the moment it is pasted. A GET that closed a task would mean
+sending the link completed the work. So every mutation is a POST answering 303,
+and `list_delegation_links` reports a fetch count that is explicitly *not* a
+read — `last_action` is the only signal that is definitely a person.
+
+**"I'm stuck" writes a comment and sets `needs_attention_at`. It does not change
+status.** `waiting` is in `DEMAND_EXCLUDED_STATUSES`, so a delegate marking
+themselves blocked would drop the minutes out of demand while coverage still
+counted the task, and `capacity()` would report a *lighter* week because somebody
+got stuck. That is the worst failure mode available here and it would have looked
+like good news.
+
+**Delegated actuals are quarantined.** `tasks.actual_by_person_id` records who
+volunteered a duration, and a non-null value keeps it out of the calibration
+table. Calibration exists to correct *Tal's* estimating; Othman taking 120
+minutes on a 90-minute task is evidence about Othman.
+
+Other things the page does not do: it never renders what a task unblocks as
+titles, only as a count, because the page is built to be forwarded and the leak
+would widen with graph density. It never shows one delegate another delegate's
+comments, because threads survive reassignment. It never pre-fills the duration
+field with the estimate, because a pre-filled guess becomes a measurement the
+instant it is submitted. And `delegate-data.ts` never calls `loadPortfolio` or
+the engine — a person-scoped subset would starve `computeCoverage` below the 60%
+threshold and produce confidently wrong slack on an unauthenticated request.
+
+The page is server-rendered with **zero JavaScript**, escaped at every
+interpolation, and carries `no-referrer` plus a content policy that forbids
+loading anything external — so the token sitting in the page's own URL has no
+outbound request to leak into.
+
+What comes back reaches Tal two ways: a Telegram push at the moment it happens
+(to `TELEGRAM_ALLOWED_CHAT_IDS`, never to a delegate's chat id), and
+`delegation_inbox`, which does **not** mark anything read just because it was
+listed — an agent that reads the comments and then loses the conversation would
+otherwise have consumed the only notification Tal was going to get.
 
 ## next_actions, and the four rules in it
 
@@ -481,9 +565,13 @@ appears on a critical path. Missed recurrences do not accumulate.
 
 ## What V1 deliberately does not have
 
-No Telegram bot, no cron, no scheduling, no Google Calendar (available hours are
-an argument), no day packing, no delegation pages, no Asana sync, no verification
-integrations, no web UI. V1 had to be usable the night it was built.
+No cron, no scheduling, no Google Calendar (available hours are an argument), no
+day packing, no Asana sync, no verification integrations. V1 had to be usable the
+night it was built.
+
+The Telegram bot, the delegation pages and the read-only dashboard were built
+after that first night and have their own sections above. Nothing else on this
+list has moved.
 
 Two consequences worth naming rather than hiding:
 

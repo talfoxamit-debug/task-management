@@ -106,6 +106,33 @@ export async function sendMessage(cfg: TelegramConfig, chatId: string, text: str
   await api(cfg, 'sendMessage', { chat_id: chatId, text: trimmed });
 }
 
+/**
+ * Push something to Tal, unprompted.
+ *
+ * The delegate pages are the first thing in TaskOS that produces news rather
+ * than answers: somebody closed a task, somebody said they are stuck. Waiting
+ * for Tal to run delegation_inbox before he learns that Othman has been blocked
+ * for two days defeats the point of having 48 delegated hours behind a 28-hour
+ * bottleneck.
+ *
+ * It goes to TELEGRAM_ALLOWED_CHAT_IDS — the inbound allow-list — because that
+ * is by construction the set of chats that already have full command access, so
+ * sending there discloses nothing new. people.telegram_chat_id is deliberately
+ * NOT used: those are delegates, and this is Tal's news.
+ *
+ * NEVER THROWS. A notification that fails must not turn a committed close into
+ * an error page for the person who did the work.
+ */
+export async function notifyOwner(text: string): Promise<void> {
+  const setup = telegramConfig();
+  if (!setup.configured) return;
+  for (const chatId of setup.config.allowedChatIds) {
+    await sendMessage(setup.config, chatId, text).catch((e) => {
+      console.log(`[taskos] owner notification failed: ${e instanceof Error ? e.message : e}`);
+    });
+  }
+}
+
 async function downloadFile(
   cfg: TelegramConfig,
   fileId: string,

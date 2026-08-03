@@ -13,6 +13,8 @@ import {
   updateTask,
 } from './edit.js';
 import { getContext } from './context.js';
+import { commentOnTask, delegationInbox } from './delegate-inbox.js';
+import { delegateLink, listDelegationLinks, revokeDelegation } from './delegation.js';
 import { getDayAllocation, nextActions, setDayAllocation } from './next-actions.js';
 import {
   createPerson,
@@ -22,6 +24,7 @@ import {
   listPeople,
   listProjects,
   listVentures,
+  moveMilestone,
   setProject,
   setVenture,
 } from './registry.js';
@@ -782,6 +785,28 @@ export function buildServer(sql: Sql): McpServer {
   );
 
   server.registerTool(
+    'move_milestone',
+    {
+      title: 'Put a milestone under the right venture',
+      description:
+        'Move a milestone to a different venture, taking its tasks with it. set_milestone CANNOT do this — it keys on (venture, name), so naming a different venture there creates a second milestone and leaves the tasks on the first. Use this when a milestone is filed under the wrong venture, and especially when list_milestones flags one on an INACTIVE venture: its demand is silently not counted, so real work exists and capacity() says the week is fine.',
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true },
+      inputSchema: {
+        milestone_id: z.string().describe('From list_milestones.'),
+        venture: z.string().describe('Slug or name of the venture it belongs to.'),
+        move_tasks: z
+          .boolean()
+          .optional()
+          .describe(
+            'Default true. A task carries its own venture and that is what allocates its hours, so leaving them behind reports demand against a venture that is not doing the work.',
+          ),
+        idempotency_key: z.string().optional(),
+      },
+    },
+    async (args) => guard(() => moveMilestone(sql, args)),
+  );
+
+  server.registerTool(
     'delete_milestone',
     {
       title: 'Delete a milestone',
@@ -837,6 +862,109 @@ export function buildServer(sql: Sql): McpServer {
       inputSchema: { active: z.boolean().optional() },
     },
     async (args) => guard(() => listPeople(sql, args)),
+  );
+
+  // -------------------------------------------------------------------------
+  // Delegation — the links, and what comes back through them
+  // -------------------------------------------------------------------------
+
+  server.registerTool(
+    'delegate_link',
+    {
+      title: 'Mint a link that lets someone do the work',
+      description:
+        'Create a secret link giving one person a page with their assigned work, where they can mark it done, say what they are stuck on and add it to their calendar. No account, no app, no invite. THE LINK IS THE CREDENTIAL and its plaintext is returned exactly once — only a hash is stored, so it can never be shown again. Default scope is one task, which stops working 90 minutes after that task is marked done; pass scope:"person" for a durable link to their whole queue, or scope:"calendar" for a read-only feed that can close nothing. Give the link to Tal to send — do not describe it as sent.',
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false },
+      inputSchema: {
+        person: z.string().describe('Exact name, as recorded by create_person.'),
+        scope: z
+          .enum(['task', 'person', 'calendar'])
+          .optional()
+          .describe('Defaults to "task" when task_id is given, otherwise "person".'),
+        task_id: z.string().optional().describe('Required for a task link, forbidden otherwise.'),
+        label: z.string().optional().describe('What this link was for, so it can be recognised later.'),
+        rotate: z
+          .boolean()
+          .optional()
+          .describe(
+            'Replace an existing live link. The old one keeps working for grace_hours so nobody is locked out.',
+          ),
+        grace_hours: z.number().min(0).max(720).optional(),
+        expires_in_days: z.number().min(1).max(3650).optional(),
+      },
+    },
+    async (args) => guard(() => delegateLink(sql, args)),
+  );
+
+  server.registerTool(
+    'list_delegation_links',
+    {
+      title: 'Which links are out there',
+      description:
+        'Every delegation link with its person, scope, prefix, issue date and expiry. A fetch count is NOT a read — WhatsApp, Telegram and Slack all fetch a URL to build a preview; last_action is the only signal that is definitely a person. Use the prefix to name a link for revoke_delegation.',
+      annotations: { readOnlyHint: true },
+      inputSchema: {
+        person: z.string().optional(),
+        include_revoked: z.boolean().optional(),
+      },
+    },
+    async (args) => guard(() => listDelegationLinks(sql, args)),
+  );
+
+  server.registerTool(
+    'revoke_delegation',
+    {
+      title: 'Kill a link now',
+      description:
+        'Revoke by token_id, by prefix, or every link belonging to a person. Immediate: the next request on those links is refused. Use it the moment a link is somewhere it should not be, and when somebody stops working with Tal.',
+      annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true },
+      inputSchema: {
+        token_id: z.string().optional(),
+        token_prefix: z.string().optional(),
+        person: z.string().optional(),
+        reason: z.string().optional(),
+      },
+    },
+    async (args) => guard(() => revokeDelegation(sql, args)),
+  );
+
+  server.registerTool(
+    'delegation_inbox',
+    {
+      title: 'What the people doing the work have said back',
+      description:
+        'Unread comments from delegates, the tasks they have flagged as blocked and how long they have been blocked, and what they closed this week. Check this at the start of a session: a blocked delegate does NOT reduce demand — the hours are still counted and simply are not moving, which is the most expensive silence in the system. Reading does not mark anything read; call again with mark_read:true only AFTER you have shown the comments to Tal.',
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true },
+      inputSchema: {
+        person: z.string().optional(),
+        include_read: z.boolean().optional(),
+        mark_read: z
+          .boolean()
+          .optional()
+          .describe('Only after Tal has actually seen them. Default false.'),
+      },
+    },
+    async (args) => guard(() => delegationInbox(sql, args)),
+  );
+
+  server.registerTool(
+    'comment_on_task',
+    {
+      title: 'Answer a delegate, in their thread',
+      description:
+        'Write a comment the current assignee sees on their delegation page. This is how a blocked person gets unblocked. It does NOT notify them — they see it next time they open their link, so tell Tal if it is urgent enough to message. Pass clear_flag:true once the blocker is genuinely gone, which takes the task off the blocked list.',
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true },
+      inputSchema: {
+        task_id: z.string(),
+        body: z.string().min(1).max(4000),
+        clear_flag: z
+          .boolean()
+          .optional()
+          .describe('Clear "needs attention" — only when the blocker is actually resolved.'),
+        idempotency_key: z.string().optional(),
+      },
+    },
+    async (args) => guard(() => commentOnTask(sql, args)),
   );
 
   return server;

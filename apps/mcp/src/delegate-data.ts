@@ -56,6 +56,11 @@ export interface DelegateView {
   rotated: boolean;
 }
 
+export interface ClosedTask {
+  id: string;
+  title: string;
+}
+
 /**
  * What this person can see: their own open assigned work, and nothing else.
  *
@@ -179,6 +184,30 @@ function addDays(iso: string, n: number): string {
   const [y, m, d] = iso.split('-').map(Number);
   const t = Date.UTC(y!, m! - 1, d! + n);
   return new Date(t).toISOString().slice(0, 10);
+}
+
+/**
+ * What this person closed in the last fifteen minutes, so Undo has something to
+ * attach itself to.
+ *
+ * Driven by the database rather than by a `?done=<id>` on the redirect, and that
+ * is worth the extra query: a page that renders its state from the query string
+ * is a page whose state can be forged by editing the URL, and it loses the undo
+ * button on the first refresh — which is exactly when a mis-tap gets noticed.
+ */
+export async function recentlyClosed(
+  sql: Sql,
+  token: ResolvedToken,
+): Promise<ClosedTask[]> {
+  return sql<Array<{ id: string; title: string }>>`
+    select id, title from tasks
+     where workspace_id = ${token.workspace_id}
+       and assignee_person_id = ${token.person_id}
+       and status = 'done'
+       and closed_at > now() - interval '15 minutes'
+       ${token.scope === 'task' ? sql`and id = ${token.task_id!}` : sql``}
+     order by closed_at desc
+     limit 5`;
 }
 
 /** Assert this token may act on this task, before anything is written. */

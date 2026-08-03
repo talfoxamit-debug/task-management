@@ -1,5 +1,6 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import mcp from './handler.js';
+import delegate, { isDelegatePath } from './delegate-route.js';
 import telegram, { TELEGRAM_PATH } from './telegram-route.js';
 
 /**
@@ -103,6 +104,16 @@ export default async function server(
 
   if (path === TELEGRAM_PATH) {
     await telegram(req, res);
+    return;
+  }
+
+  // The delegate pages: /p/<token>, /d/<token>, /c/<token>.ics and the POSTs
+  // under them. These are the ONLY unauthenticated routes that touch data, and
+  // they are matched by a strict pattern rather than a prefix so a path that
+  // merely starts with /p/ cannot reach them. Everything about the trade is
+  // documented in delegate-route.ts.
+  if (isDelegatePath(path)) {
+    await delegate(req, res, path);
     return;
   }
 

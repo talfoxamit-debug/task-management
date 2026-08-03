@@ -106,6 +106,25 @@ describe('the agent instructions', () => {
     expect(INSTRUCTIONS).toContain('drafted email is not a sent email');
   });
 
+  it('name delegation as the largest lever, with the token rule', () => {
+    expect(INSTRUCTIONS).toContain('delegate_link');
+    // The whole reason delegation is worth building: 28 hours against 48.
+    expect(INSTRUCTIONS).toContain('28');
+    expect(INSTRUCTIONS).toContain('48');
+    // Tal's rule, stated so an agent can tell somebody what the link will do.
+    expect(INSTRUCTIONS).toContain('ONE LINK PER TASK');
+    expect(INSTRUCTIONS).toContain('90 minutes');
+    // Same discipline as mark_prepared: hand it over, do not claim to have sent.
+    expect(INSTRUCTIONS).toContain('Never say you sent it');
+  });
+
+  it('say to read the delegation inbox before marking it read', () => {
+    expect(INSTRUCTIONS).toContain('delegation_inbox');
+    // A blocked delegate makes the week look LIGHTER if this is misunderstood.
+    expect(INSTRUCTIONS).toContain('does NOT reduce demand');
+    expect(INSTRUCTIONS).toContain('mark_read:true');
+  });
+
   it('stay short enough to survive a context window', () => {
     // Guidance nobody reads is guidance that does not exist. This is roughly
     // 1.5k tokens; well past that and it competes with the conversation.
