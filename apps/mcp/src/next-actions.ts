@@ -101,6 +101,17 @@ export async function nextActions(sql: Sql, input: NextActionsInput): Promise<To
     openBlockers.set(blocked, (openBlockers.get(blocked) ?? 0) + 1);
   }
 
+  // Preparation is read here rather than through the portfolio, because the
+  // engine's Task type has no business knowing about it: nothing in slack,
+  // coverage or demand depends on whether Claude has drafted something.
+  const preparedRows = await sql<
+    Array<{ id: string; prepared_summary: string | null; review_minutes: number | null }>
+  >`
+    select id, prepared_summary, review_minutes from tasks
+     where workspace_id = ${workspaceId} and prepared_at is not null
+       and status not in ('done', 'killed')`;
+  const preparedById = new Map(preparedRows.map((r) => [r.id, r]));
+
   const scoreById = new Map(pipeline.scores.scores.map((s) => [s.task_id, s]));
   const ventureById = new Map(portfolio.ventures.map((v) => [v.id, v]));
   const milestoneById = new Map(portfolio.milestones.map((m) => [m.id, m]));
@@ -154,6 +165,7 @@ export async function nextActions(sql: Sql, input: NextActionsInput): Promise<To
         flexExceeded,
         urgent,
         contextMatch: input.context ? t.context === input.context : true,
+        prepared: preparedById.get(t.id) ?? null,
       };
     })
     .filter((c) => {
@@ -167,6 +179,12 @@ export async function nextActions(sql: Sql, input: NextActionsInput): Promise<To
       return true;
     })
     .sort((a, b) => {
+      // Prepared work first, always. Claude has already done the reading and
+      // the drafting; what is left is minutes of judgement on something nearly
+      // finished, which is the cheapest valuable time in the week. Burying it
+      // under a fresh 2-hour task is the wrong trade every single time.
+      const prep = Number(Boolean(b.prepared)) - Number(Boolean(a.prepared));
+      if (prep !== 0) return prep;
       // Context is soft: a mismatch costs ranking, never eligibility.
       const ctx = Number(b.contextMatch) - Number(a.contextMatch);
       if (ctx !== 0) return ctx;
@@ -174,7 +192,11 @@ export async function nextActions(sql: Sql, input: NextActionsInput): Promise<To
     });
 
   const actions = candidates.slice(0, limit).map((c) => {
-    const overSlot = c.task.estimate_minutes > input.available_minutes;
+    // A prepared task costs its review, not its original estimate: the drafting
+    // has happened. Falling back to the estimate would make a five-minute
+    // review look like a two-hour job and it would never get picked up.
+    const cost = c.prepared ? (c.prepared.review_minutes ?? 15) : c.task.estimate_minutes;
+    const overSlot = cost > input.available_minutes;
     const reasons: string[] = [];
     if (c.milestone) {
       reasons.push(
@@ -188,6 +210,11 @@ export async function nextActions(sql: Sql, input: NextActionsInput): Promise<To
     if (c.components?.urgencyReason && c.components.urgencyReason !== 'none') {
       reasons.push(c.components.urgencyReason.replace(/_/g, ' '));
     }
+    if (c.prepared) {
+      reasons.unshift(
+        `DRAFTED and waiting on you${c.prepared.prepared_summary ? `: ${c.prepared.prepared_summary}` : ''}`,
+      );
+    }
     if (!c.contextMatch) reasons.push(`${c.task.context} work, not ${input.context}`);
     if (c.usesFlex) reasons.push(`off-plan for today, uses flex`);
     if (reasons.length === 0) reasons.push(`value ${c.task.value}`);
@@ -198,7 +225,10 @@ export async function nextActions(sql: Sql, input: NextActionsInput): Promise<To
       venture: c.venture?.slug ?? '—',
       context: c.task.context,
       energy: c.task.energy,
-      estimate_minutes: c.task.estimate_minutes,
+      estimate_minutes: cost,
+      ...(c.prepared
+        ? { awaiting_review: true, full_estimate_minutes: c.task.estimate_minutes }
+        : {}),
       score: Math.round(c.score * 10) / 10,
       why: reasons.join(', '),
       ...(overSlot
@@ -228,6 +258,12 @@ export async function nextActions(sql: Sql, input: NextActionsInput): Promise<To
   if (excluded.day > 0) {
     notes.push(
       `${excluded.day} off-plan task(s) were excluded because the day's flex is spent; anything with negative slack was shown anyway`,
+    );
+  }
+  const prepared = actions.filter((a) => 'awaiting_review' in a).length;
+  if (prepared > 0) {
+    notes.push(
+      `${prepared} of these are already drafted and are shown first: what remains is your review, not the original estimate`,
     );
   }
   const partials = actions.filter((a) => 'partial' in a).length;

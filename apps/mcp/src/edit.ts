@@ -675,3 +675,165 @@ export async function linkTasks(sql: Sql, input: LinkTasksInput): Promise<ToolEn
 
   return envelope(plainConfidence(notes), { written: written.length, edges: written }, errors);
 }
+
+// ---------------------------------------------------------------------------
+// mark_prepared
+// ---------------------------------------------------------------------------
+
+export interface MarkPreparedInput {
+  task_id: string;
+  summary: string;
+  review_minutes?: number;
+  document_id?: string;
+  prepared_by?: 'ai' | 'tal' | 'delegate';
+  idempotency_key?: string;
+}
+
+/**
+ * Record that the preparable part of a task is done, and Tal's judgement is all
+ * that remains.
+ *
+ * This is the shape Tal actually wants from automation: Claude reads, gathers
+ * and drafts; Tal reviews and sends. Not because Claude cannot act, but because
+ * automated output is frequently not what he would have chosen, and being the
+ * final reviewer is the point rather than a limitation.
+ *
+ * IT DOES NOT CLOSE THE TASK, and it does not change its status. A drafted
+ * email is not a sent email, and recording it as done would put a fiction into
+ * the one system whose entire job is to say what is actually going to slip.
+ * `waiting` would be worse still: it is in DEMAND_EXCLUDED_STATUSES, so the
+ * minutes would leave demand while coverage still counted the task, and
+ * capacity() would report a lighter week on the strength of work that has not
+ * landed.
+ *
+ * What it changes is visibility. A prepared task is the cheapest valuable work
+ * in the system -- nearly finished, minutes of judgement left -- and until now
+ * it looked exactly like a task nobody had started.
+ */
+export async function markPrepared(sql: Sql, input: MarkPreparedInput): Promise<ToolEnvelope> {
+  const replay = await findReplay(sql, input.idempotency_key);
+  if (replay) {
+    return envelope(plainConfidence(['replayed: nothing was written']), {
+      ...(replay.result as Record<string, unknown>),
+      replayed: true,
+    });
+  }
+
+  const workspaceId = await resolveWorkspaceId(sql);
+  const before = await readTask(sql, workspaceId, input.task_id);
+  if (!before) return notFound(input.task_id);
+
+  if (before.status === 'done' || before.status === 'killed') {
+    return envelope(
+      plainConfidence([`this task is already ${before.status}; nothing was changed`]),
+      { task: before, mutated: false },
+    );
+  }
+
+  if (input.document_id) {
+    const doc = await sql<Array<{ id: string }>>`
+      select id from documents where id = ${input.document_id} and workspace_id = ${workspaceId}`;
+    if (!doc[0]) {
+      return envelope(plainConfidence([]), { task: before }, [
+        {
+          code: 'unknown_document',
+          message: `document ${input.document_id} does not exist — nothing was written`,
+        },
+      ]);
+    }
+    await sql`
+      update documents set task_id = ${input.task_id}
+       where id = ${input.document_id} and workspace_id = ${workspaceId}`;
+  }
+
+  await sql.begin(async (tx) => {
+    await tx`
+      update tasks
+         set prepared_at = now(),
+             prepared_by = ${input.prepared_by ?? 'ai'},
+             prepared_summary = ${input.summary},
+             review_minutes = ${input.review_minutes ?? null},
+             last_touched_at = now()
+       where id = ${input.task_id} and workspace_id = ${workspaceId}`;
+    await recordReceipt(tx, {
+      key: input.idempotency_key,
+      actor: ACTOR,
+      verb: 'prepared_task',
+      task_id: input.task_id,
+      workspace_id: workspaceId,
+      result: { task_id: input.task_id, summary: input.summary },
+    });
+  });
+
+  const notes = [
+    'this task is NOT done: a drafted thing is not a sent thing, and recording it as done would put a fiction into the system',
+    'it now shows first in next_actions, because minutes of judgement on nearly-finished work is the cheapest valuable time in the week',
+  ];
+  if (input.review_minutes === undefined) {
+    notes.push(
+      'review_minutes was not stated, so how long the review will take is unknown and is not being guessed',
+    );
+  }
+
+  return envelope(plainConfidence(notes), {
+    task: (await readTask(sql, workspaceId, input.task_id))!,
+    prepared: true,
+  });
+}
+
+/** Everything drafted and waiting on Tal. */
+export async function awaitingReview(sql: Sql, _input: object): Promise<ToolEnvelope> {
+  const workspaceId = await resolveWorkspaceId(sql);
+  const rows = await sql<
+    Array<{
+      id: string;
+      title: string;
+      venture: string;
+      summary: string;
+      review_minutes: number | null;
+      prepared_at: Date;
+      prepared_by: string;
+      documents: number;
+    }>
+  >`
+    select t.id, t.title, v.slug as venture, t.prepared_summary as summary,
+           t.review_minutes, t.prepared_at, t.prepared_by,
+           (select count(*)::int from documents d where d.task_id = t.id) as documents
+      from tasks t join ventures v on v.id = t.venture_id
+     where t.workspace_id = ${workspaceId}
+       and t.prepared_at is not null
+       and t.status not in ('done', 'killed')
+     order by t.prepared_at`;
+
+  const stated = rows.filter((r) => r.review_minutes !== null);
+  const total = stated.reduce((s, r) => s + (r.review_minutes ?? 0), 0);
+
+  const notes: string[] = [];
+  if (rows.length > 0) {
+    notes.push(
+      stated.length === rows.length
+        ? `${rows.length} item(s) drafted and waiting on you, about ${Math.round((total / 60) * 10) / 10}h of review in total`
+        : `${rows.length} item(s) drafted and waiting on you; ${rows.length - stated.length} did not state how long the review takes, so the total below counts only the ${stated.length} that did`,
+    );
+    notes.push('none of these are done — each needs your judgement and then sending');
+  }
+
+  const list = narrow(
+    rows.map((r) => ({
+      task_id: r.id,
+      title: r.title,
+      venture: r.venture,
+      what_was_prepared: r.summary,
+      review_minutes: r.review_minutes,
+      prepared_by: r.prepared_by,
+      prepared: r.prepared_at.toISOString().slice(0, 10),
+      attached_documents: r.documents,
+    })),
+  );
+
+  return envelope(plainConfidence(notes), {
+    awaiting_review: list.items,
+    total: list.total,
+    review_minutes_total: total,
+  });
+}

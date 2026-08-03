@@ -287,3 +287,82 @@ describe('capacity reports the ingredients, not only the rate', () => {
     }
   });
 });
+
+describe('prepared work', () => {
+  /**
+   * Tal's model: Claude reads, gathers and drafts; Tal reviews and sends.
+   * The state that was missing is "drafted, waiting on you for five minutes" —
+   * nearly finished, cheapest valuable work in the week, and until now
+   * indistinguishable from a task nobody had started.
+   */
+  it('does not close the task or change its status', async () => {
+    const { markPrepared } = await import('../src/edit.js');
+    const id = await taskIdByTitle(sql, 'Draft the Seatop deck');
+    const before = await sql<Array<{ status: string }>>`select status from tasks where id = ${id}`;
+
+    const res = await markPrepared(sql, {
+      task_id: id,
+      summary: 'Deck drafted from the Aviel notes; needs your read and the pricing slide checked',
+      review_minutes: 10,
+      idempotency_key: 'prep-1',
+    });
+    expect(res.ok).toBe(true);
+
+    const after = await sql<Array<{ status: string; prepared_at: Date | null }>>`
+      select status, prepared_at from tasks where id = ${id}`;
+    // A drafted thing is not a sent thing. Recording it as done would put a
+    // fiction into the one system whose job is to say what will slip.
+    expect(after[0]!.status).toBe(before[0]!.status);
+    expect(after[0]!.prepared_at).not.toBeNull();
+    expect(res.confidence.notes.join(' ')).toContain('NOT done');
+  });
+
+  it('sorts first in next_actions, and costs its review not its estimate', async () => {
+    const res = await nextActions(sql, {
+      available_minutes: 30,
+      energy: 'high',
+      ignore_day_allocation: true,
+    });
+    const rows = res['actions'] as Array<Record<string, unknown>>;
+    expect(rows[0]!['title']).toBe('Draft the Seatop deck');
+    expect(rows[0]!['awaiting_review']).toBe(true);
+    // 10 minutes of review, not the original 120. Falling back to the estimate
+    // would make a ten-minute review look like a two-hour job in a 30-minute
+    // slot, and it would never be picked up.
+    expect(rows[0]!['estimate_minutes']).toBe(10);
+    expect(rows[0]!['full_estimate_minutes']).toBe(120);
+    expect(rows[0]!['partial']).toBeUndefined();
+    expect(String(rows[0]!['why'])).toContain('DRAFTED and waiting on you');
+  });
+
+  it('lists what is waiting, with the total review time', async () => {
+    const { awaitingReview } = await import('../src/edit.js');
+    const res = await awaitingReview(sql, {});
+    expect(res['total']).toBe(1);
+    expect(res['review_minutes_total']).toBe(10);
+    const row = (res['awaiting_review'] as Array<Record<string, unknown>>)[0]!;
+    expect(row['what_was_prepared']).toContain('Aviel');
+    expect(res.confidence.notes.join(' ')).toContain('none of these are done');
+  });
+
+  it('does not guess how long a review takes', async () => {
+    const { markPrepared } = await import('../src/edit.js');
+    const id = await taskIdByTitle(sql, 'Get the survey back');
+    const res = await markPrepared(sql, {
+      task_id: id,
+      summary: 'Chaser email drafted',
+      idempotency_key: 'prep-2',
+    });
+    expect(res.confidence.notes.join(' ')).toContain('is not being guessed');
+    const rows = await sql<Array<{ review_minutes: number | null }>>`
+      select review_minutes from tasks where id = ${id}`;
+    expect(rows[0]!.review_minutes).toBeNull();
+  });
+
+  it('refuses to prepare something already closed', async () => {
+    const { markPrepared } = await import('../src/edit.js');
+    const id = await taskIdByTitle(sql, 'File the receipts');
+    const res = await markPrepared(sql, { task_id: id, summary: 'too late' });
+    expect(res['mutated']).toBe(false);
+  });
+});

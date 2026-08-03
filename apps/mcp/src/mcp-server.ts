@@ -2,7 +2,16 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import { INSTRUCTIONS } from './instructions.js';
 import { listSuggestions, resolveSuggestion, suggestImprovement } from './feedback.js';
-import { closeMany, killTask, linkTasks, reopenTask, snoozeTask, updateTask } from './edit.js';
+import {
+  awaitingReview,
+  closeMany,
+  killTask,
+  linkTasks,
+  markPrepared,
+  reopenTask,
+  snoozeTask,
+  updateTask,
+} from './edit.js';
 import { getContext } from './context.js';
 import { getDayAllocation, nextActions, setDayAllocation } from './next-actions.js';
 import {
@@ -446,6 +455,45 @@ export function buildServer(sql: Sql): McpServer {
       },
     },
     async (args) => guard(() => getContext(sql, args)),
+  );
+
+  server.registerTool(
+    'mark_prepared',
+    {
+      title: 'You drafted it; Tal reviews and sends',
+      description:
+        "Record that you have done the preparable part of a task -- read, gathered, drafted -- and Tal's judgement is all that remains. THIS DOES NOT CLOSE THE TASK and does not change its status: a drafted email is not a sent email, and recording it as done would put a fiction into the system. Attach what you produced with attach_document and pass its document_id. State review_minutes if you can estimate the review honestly; leave it out otherwise. Prepared work sorts FIRST in next_actions, because minutes of judgement on something nearly finished is the cheapest valuable time in the week.",
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true },
+      inputSchema: {
+        task_id: z.string(),
+        summary: z
+          .string()
+          .min(3)
+          .describe('What you produced, in a sentence, so the review can start without re-reading everything.'),
+        review_minutes: z
+          .number()
+          .int()
+          .positive()
+          .optional()
+          .describe("Minutes of Tal's judgement still needed. Omit rather than guess."),
+        document_id: z.string().optional().describe('The draft, from attach_document.'),
+        prepared_by: z.enum(['ai', 'tal', 'delegate']).optional().describe('Default ai.'),
+        idempotency_key: z.string().optional(),
+      },
+    },
+    async (args) => guard(() => markPrepared(sql, args)),
+  );
+
+  server.registerTool(
+    'awaiting_review',
+    {
+      title: 'Everything drafted and waiting on Tal',
+      description:
+        'The queue of work Claude has prepared and Tal has not yet reviewed and sent, with what was produced and how long each review should take. None of it is done. This is usually the cheapest hour in the week.',
+      annotations: { readOnlyHint: true },
+      inputSchema: {},
+    },
+    async (args) => guard(() => awaitingReview(sql, args)),
   );
 
   server.registerTool(

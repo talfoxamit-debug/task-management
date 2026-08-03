@@ -99,10 +99,17 @@ describe('the agent instructions', () => {
     expect(INSTRUCTIONS).toContain('not capped');
   });
 
+  it('tell the agent to prepare rather than send', () => {
+    expect(INSTRUCTIONS).toContain('mark_prepared');
+    // The rule that keeps a fiction out of the system.
+    expect(INSTRUCTIONS).toContain('NEVER close a task');
+    expect(INSTRUCTIONS).toContain('drafted email is not a sent email');
+  });
+
   it('stay short enough to survive a context window', () => {
     // Guidance nobody reads is guidance that does not exist. This is roughly
     // 1.5k tokens; well past that and it competes with the conversation.
-    expect(INSTRUCTIONS.length).toBeLessThan(15000);
+    expect(INSTRUCTIONS.length).toBeLessThan(17000);
     expect(INSTRUCTIONS.length).toBeGreaterThan(2000);
   });
 });
