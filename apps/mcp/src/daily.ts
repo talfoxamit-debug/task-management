@@ -1,5 +1,5 @@
-import { loadSettings, resolveWorkspaceId, type Sql } from './db.js';
-import { nextActions } from './next-actions.js';
+import { resolveWorkspaceId, type Sql } from './db.js';
+import { buildDayPlan } from './day-plan.js';
 
 /**
  * The morning brief.
@@ -56,7 +56,6 @@ function human(iso: string, today: string): string {
  */
 export async function buildDailyBrief(sql: Sql, date?: string): Promise<DailyBrief> {
   const workspaceId = await resolveWorkspaceId(sql);
-  const settings = await loadSettings(sql, workspaceId);
 
   const todayRows = await sql<Array<{ d: string; dow: number }>>`
     select taskos_today(${workspaceId})::text as d,
@@ -110,35 +109,47 @@ export async function buildDailyBrief(sql: Sql, date?: string): Promise<DailyBri
     }
   }
 
-  // --- What to actually pick up -------------------------------------------
+  // --- The day, in hours ---------------------------------------------------
   //
-  // The day's usable minutes come from the stored week, not from an assumption.
-  // With no week on record the section is omitted entirely rather than filled
-  // in from a guess, because an invented hours figure produces a confident
-  // answer to a question nobody asked.
-  const weeklyRows = await sql<Array<{ h: number | null }>>`
-    select default_weekly_hours as h from settings where workspace_id = ${workspaceId}`;
-  const weekly = weeklyRows[0]?.h == null ? null : Number(weeklyRows[0].h);
-  if (weekly && weekly > 0) {
-    const workingDays = await sql<Array<{ n: number }>>`
-      select count(*)::int as n from day_allocation
-       where workspace_id = ${workspaceId} and is_working_day`;
-    const perDay = (weekly / Math.max(workingDays[0]?.n ?? 5, 1)) * (1 - settings.buffer_ratio);
-    const slot = Math.round(perDay * 60);
-
-    const next = await nextActions(sql, { available_minutes: slot, date: today, limit: 3 });
-    const actions = (next['actions'] as Array<Record<string, unknown>>) ?? [];
-    if (actions.length > 0) {
-      lines.push('', `FIRST (${hours(slot)} usable today)`);
-      for (const a of actions) {
-        const why = a['why'] ? ` — ${a['why']}` : '';
-        const partial = a['partial'] ? ' [bigger than the slot]' : '';
-        lines.push(`• ${a['title']}${why}${partial}`);
-      }
+  // A ranking still leaves the whole allocation problem to the person reading
+  // it, every morning. The plan below is the same ranking laid against the
+  // hours actually on record — and it chains dependent work, so "do A, then B
+  // which A unblocks" appears as two slots rather than as one suggestion and
+  // one silence.
+  const plan = await buildDayPlan(sql, { date: today });
+  if (plan.slots.length > 0) {
+    lines.push('', 'THE DAY');
+    for (const slot of plan.slots) {
+      const marks: string[] = [];
+      if (slot.review_of_draft) marks.push('REVIEW');
+      if (slot.ai_can_prepare) marks.push('AI DRAFTS FIRST');
+      if (slot.uses_flex) marks.push('flex');
+      const tag = marks.length > 0 ? ` [${marks.join(' · ')}]` : '';
+      lines.push(`${slot.start}-${slot.end} ${slot.title}${tag}`);
+      const detail: string[] = [slot.venture];
+      if (slot.after && slot.after.length > 0) detail.push(`after ${slot.after.join(', ')}`);
+      if (slot.unblocks) detail.push(`unblocks ${slot.unblocks}`);
+      lines.push(`   ${detail.join(' · ')}`);
     }
-    const flexLeft = (next['day'] as { flex_left?: number } | null)?.flex_left;
-    if (typeof flexLeft === 'number' && day?.name) {
-      lines.push(`  ${flexLeft} min of flex left for work outside ${day.name}.`);
+  } else if (plan.window === null) {
+    lines.push(
+      '',
+      'THE DAY: the hours of your day are not on record, so there is no plan to lay out.',
+      'Ask me to set them and this becomes a schedule.',
+    );
+  }
+
+  if (plan.to_prepare.length > 0) {
+    lines.push('', 'CLAUDE DRAFTS BEFORE THOSE SLOTS');
+    for (const t of plan.to_prepare) {
+      lines.push(`• ${t.title} — needed by ${t.by}`);
+    }
+  }
+
+  if (plan.unplaced.length > 0) {
+    lines.push('', `DID NOT FIT (${plan.unplaced.length})`);
+    for (const u of plan.unplaced.slice(0, 3)) {
+      lines.push(`• ${u.title} — ${u.reason}`);
     }
   }
 
@@ -207,8 +218,8 @@ export async function buildDailyBrief(sql: Sql, date?: string): Promise<DailyBri
 
   // --- What it does not know ----------------------------------------------
   const unknown: string[] = [];
-  if (!weekly || weekly <= 0) {
-    unknown.push('your weekly hours are not on record, so there is no "first" section');
+  if (plan.window === null && plan.working) {
+    unknown.push('the hours your day runs are not set, so nothing can be laid into a schedule');
   }
   if (!day) unknown.push(`no allocation is set for ${DAYS[dow]}`);
   if (unknown.length > 0) lines.push('', `NOT KNOWN: ${unknown.join('; ')}.`);

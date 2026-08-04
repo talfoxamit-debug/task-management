@@ -1,4 +1,5 @@
 import { close } from './tools.js';
+import { createSignedDownloadUrl, storageConfig } from './storage.js';
 import { stampAction, type ResolvedToken } from './delegation.js';
 import type { Sql } from './db.js';
 
@@ -42,6 +43,8 @@ export interface DelegateTask {
     at: string;
     blocks_progress: boolean;
   }>;
+  /** Files attached to this task, so the context arrives with the work. */
+  files: Array<{ id: string; title: string; url: string | null; note: string }>;
 }
 
 export interface DelegateView {
@@ -52,6 +55,15 @@ export interface DelegateView {
   open: DelegateTask[];
   later: DelegateTask[];
   finished_this_week: number;
+  /**
+   * A SHORT past. Two weeks, titles only, no durations and no comment threads.
+   *
+   * Enough that the page reads as a record of work rather than as an unending
+   * demand, and little enough that it is not an archive: an assignee who can
+   * scroll a year of history has a page that answers questions nobody asked and
+   * buries the one that matters, which is what to do now.
+   */
+  finished: FinishedTask[];
   scope: 'person' | 'task';
   rotated: boolean;
 }
@@ -59,6 +71,12 @@ export interface DelegateView {
 export interface ClosedTask {
   id: string;
   title: string;
+}
+
+/** The short past: what they finished, so a page is not only a demand. */
+export interface FinishedTask {
+  title: string;
+  on: string;
 }
 
 /**
@@ -156,9 +174,61 @@ export async function loadDelegateView(
   const today = settings[0]?.today ?? new Date().toISOString().slice(0, 10);
   const soon = (d: string | null) => d === null || d <= addDays(today, 7);
 
+  // Files attached to THEIR tasks, and to nothing else.
+  //
+  // Scoped through the task ids already filtered above rather than by a fresh
+  // query on documents, so there is exactly one place the assignee check
+  // happens. A document attached to the venture or the milestone is deliberately
+  // NOT included: those belong to work far wider than this person's, and the
+  // whole reach of this page is one person's own tasks.
+  const byTaskFiles = new Map<string, DelegateTask['files']>();
+  if (ids.length > 0) {
+    const docs = await sql<
+      Array<{
+        id: string;
+        task_id: string;
+        title: string;
+        storage_path: string;
+        status: string;
+        mime_type: string | null;
+      }>
+    >`
+      select id, task_id, title, storage_path, status, mime_type
+        from documents
+       where workspace_id = ${token.workspace_id} and task_id in ${sql(ids)}
+       order by created_at`;
+
+    const storage = storageConfig();
+    for (const d of docs) {
+      const list = byTaskFiles.get(d.task_id) ?? [];
+      let url: string | null = null;
+      let note = '';
+      if (d.status !== 'stored') {
+        // A pending document is a link that was issued and never used. Saying
+        // "filed" here would send somebody looking for a file that is not there.
+        note = d.status === 'pending' ? 'not uploaded yet' : d.status;
+      } else if (!storage.configured) {
+        note = 'file storage is not configured';
+      } else {
+        try {
+          // Short-lived and minted per page load. A permanent URL in a page
+          // built to be forwarded is a file handed to whoever it reaches, long
+          // after the link that showed it has expired.
+          url = await createSignedDownloadUrl(storage.config, d.storage_path, 900);
+          note = 'expires in 15 minutes';
+        } catch {
+          note = 'could not be opened';
+        }
+      }
+      list.push({ id: d.id, title: d.title, url, note });
+      byTaskFiles.set(d.task_id, list);
+    }
+  }
+
   const all: DelegateTask[] = rows.map((r) => ({
     ...r,
     comments: byTask.get(r.id) ?? [],
+    files: byTaskFiles.get(r.id) ?? [],
   }));
 
   const finished = await sql<Array<{ n: number }>>`
@@ -166,6 +236,17 @@ export async function loadDelegateView(
      where workspace_id = ${token.workspace_id}
        and assignee_person_id = ${token.person_id}
        and status = 'done' and closed_at > now() - interval '7 days'`;
+
+  // The short past. Titles and dates only — no durations, no threads, no
+  // archive. Two weeks is enough to read as a record of work and short enough
+  // that it cannot bury the question the page exists to answer.
+  const recent = await sql<Array<{ title: string; on: string }>>`
+    select title, closed_at::date::text as on from tasks
+     where workspace_id = ${token.workspace_id}
+       and assignee_person_id = ${token.person_id}
+       and status = 'done' and closed_at > now() - interval '14 days'
+     order by closed_at desc
+     limit 8`;
 
   return {
     person: token.person_name,
@@ -175,6 +256,7 @@ export async function loadDelegateView(
     open: all.filter((t) => soon(t.deadline_date)),
     later: all.filter((t) => !soon(t.deadline_date)),
     finished_this_week: finished[0]?.n ?? 0,
+    finished: recent,
     scope: token.scope === 'task' ? 'task' : 'person',
     rotated: Boolean(token.superseded_link),
   };

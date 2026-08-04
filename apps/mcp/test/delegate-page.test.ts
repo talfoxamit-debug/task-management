@@ -406,6 +406,52 @@ describe('the calendar', () => {
   });
 });
 
+describe('the short past, and the files', () => {
+  it('shows what they finished recently, so the page is not only a demand', async () => {
+    const id = await taskIdByTitle(sql, 'Purge the CDN cache');
+    await sql`update tasks set status='done', closed_at = now() - interval '2 days',
+                actual_by_person_id = (select id from people where name='Othman')
+               where id = ${id}`;
+    const html = await (await get(`/p/${othman}`)).text();
+    expect(html).toContain('Done recently');
+    expect(html).toContain('Purge the CDN cache');
+    await sql`update tasks set status='active', closed_at=null where id = ${id}`;
+  });
+
+  it('keeps the past SHORT rather than becoming an archive', async () => {
+    const id = await taskIdByTitle(sql, 'Purge the CDN cache');
+    await sql`update tasks set status='done', closed_at = now() - interval '60 days'
+               where id = ${id}`;
+    const html = await (await get(`/p/${othman}`)).text();
+    // Two weeks. A page somebody can scroll a year of buries the one question
+    // it exists to answer.
+    expect(html).not.toContain('Done recently');
+    await sql`update tasks set status='active', closed_at=null where id = ${id}`;
+  });
+
+  it('lists a file attached to their task, and says a pending one is not there', async () => {
+    const id = await taskIdByTitle(sql, 'Rewire the checkout redirect');
+    await sql`
+      insert into documents (workspace_id, task_id, title, storage_path, status, source)
+      values ((select id from workspaces limit 1), ${id}, 'Redirect spec.pdf',
+              (select id from workspaces limit 1) || '/spec.pdf', 'pending', 'claude')`;
+    const html = await (await get(`/p/${othman}`)).text();
+    expect(html).toContain('Redirect spec.pdf');
+    // Saying "filed" would send somebody looking for a file that is not there.
+    expect(html).toContain('not uploaded yet');
+  });
+
+  it('never shows a file attached to somebody else\'s task', async () => {
+    const saarTask = await taskIdByTitle(sql, 'Saar private thing');
+    await sql`
+      insert into documents (workspace_id, task_id, title, storage_path, status, source)
+      values ((select id from workspaces limit 1), ${saarTask}, 'Saar only.pdf',
+              (select id from workspaces limit 1) || '/saar.pdf', 'pending', 'claude')`;
+    const html = await (await get(`/p/${othman}`)).text();
+    expect(html).not.toContain('Saar only.pdf');
+  });
+});
+
 describe('what comes back to Tal', () => {
   it('lists unread comments and how long a block has been sitting', async () => {
     const res = await delegationInbox(sql, {});

@@ -125,6 +125,15 @@ describe('the agent instructions', () => {
     expect(INSTRUCTIONS).toContain('mark_read:true');
   });
 
+  it('tell the agent to flag what it can draft, and why that matters', () => {
+    expect(INSTRUCTIONS).toContain('day_plan');
+    expect(INSTRUCTIONS).toContain('ai_preparable');
+    // Without this it gets set from the title, and the plan books 15 minutes
+    // where two hours were needed.
+    expect(INSTRUCTIONS).toContain('only after');
+    expect(INSTRUCTIONS).toContain('review_minutes');
+  });
+
   it('stay short enough to survive a context window', () => {
     // Guidance nobody reads is guidance that does not exist. This is roughly
     // 1.5k tokens; well past that and it competes with the conversation.

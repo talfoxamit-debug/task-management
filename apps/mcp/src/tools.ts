@@ -201,6 +201,10 @@ export interface CommitTaskInput {
   assignee?: string;
   is_recurring?: boolean;
   recurrence_rule?: string;
+  /** Claude can draft this before Tal reaches it; the day plan books the review. */
+  ai_preparable?: boolean;
+  /** How long reviewing the draft takes. Only meaningful with ai_preparable. */
+  review_minutes?: number;
   /** Titles this task must be finished before. Dependency edges by reference. */
   blocks?: string[];
   /** Titles that must be finished before this task. */
@@ -312,6 +316,12 @@ export async function commitTasks(
           assignee_person_id: assigneeId,
           is_recurring: t.is_recurring ?? false,
           recurrence_rule: t.recurrence_rule ?? null,
+          // Set deliberately by an agent that has read the task, never inferred
+          // from the title: the day plan books the REVIEW rather than the build
+          // for anything flagged here, so a wrong flag books fifteen minutes
+          // where two hours were needed.
+          ai_preparable: t.ai_preparable ?? false,
+          ...(t.review_minutes != null ? { review_minutes: t.review_minutes } : {}),
         };
 
         if (fields.is_recurring && !fields.recurrence_rule) {

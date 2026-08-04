@@ -102,6 +102,13 @@ button.quiet { background:transparent; color:var(--accent); border:1px solid var
 details { margin-top:.75rem; }
 summary { cursor:pointer; color:var(--accent); font-size:.9rem; font-weight:600; }
 a.cal { display:inline-block; margin-top:.75rem; font-size:.85rem; color:var(--accent); }
+ul.files { list-style:none; margin:.6rem 0 0; padding:0; }
+ul.files li { font-size:.88rem; padding:.15rem 0; }
+ul.files a { color:var(--accent); }
+ul.files .exp { color:var(--dim); font-size:.78rem; }
+ul.past { list-style:none; margin:0; padding:0; }
+ul.past li { font-size:.9rem; color:var(--dim); padding:.2rem 0; }
+ul.past li b { color:var(--fg); font-weight:500; }
 footer { margin-top:2.5rem; color:var(--dim); font-size:.8rem; border-top:1px solid var(--line);
          padding-top:1rem; }
 .empty { color:var(--dim); }
@@ -159,6 +166,25 @@ function thread(task: DelegateTask): string {
   return `<ul class="thread">${items}</ul>`;
 }
 
+/**
+ * Attached files, with URLs that expire.
+ *
+ * The link is minted per page load and lasts fifteen minutes. A permanent URL
+ * on a page built to be forwarded is a file handed to whoever the page reaches,
+ * long after the link that showed it has been revoked.
+ */
+function files(task: DelegateTask): string {
+  if (task.files.length === 0) return '';
+  const items = task.files
+    .map((f) =>
+      f.url
+        ? `<li><a href="${esc(f.url)}" rel="noreferrer">${esc(f.title)}</a> <span class="exp">${esc(f.note)}</span></li>`
+        : `<li>${esc(f.title)} <span class="exp">— ${esc(f.note)}</span></li>`,
+    )
+    .join('');
+  return `<ul class="files">${items}</ul>`;
+}
+
 function card(task: DelegateTask, base: string, today: string): string {
   const due = task.deadline_date
     ? `<span class="due">due ${esc(humanDate(task.deadline_date, today))}</span> · `
@@ -183,6 +209,7 @@ function card(task: DelegateTask, base: string, today: string): string {
   ${notes}
   ${unblocks}
   ${flagged}
+  ${files(task)}
   ${thread(task)}
   <form class="row" method="post" action="${esc(base)}/close">
     <input type="hidden" name="task_id" value="${esc(task.id)}">
@@ -275,6 +302,17 @@ export function renderDelegatePage(
   if (view.later.length > 0) {
     parts.push('<h2 class="section">Later</h2>');
     parts.push(view.later.map((t) => card(t, opts.base, view.today)).join(''));
+  }
+
+  if (view.finished.length > 0 && view.scope !== 'task') {
+    // A page that is only ever a demand is a page people stop opening.
+    const items = view.finished
+      .map((f) => `<li><b>${esc(f.title)}</b> · ${esc(f.on)}</li>`)
+      .join('');
+    parts.push(
+      '<h2 class="section">Done recently</h2>',
+      `<article><ul class="past">${items}</ul></article>`,
+    );
   }
 
   if (opts.calendarFeedUrl) {

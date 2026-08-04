@@ -99,6 +99,8 @@ export interface UpdateTaskInput {
   assignee?: string | null;
   is_recurring?: boolean;
   recurrence_rule?: string | null;
+  ai_preparable?: boolean;
+  review_minutes?: number | null;
   notes?: string;
   milestone?: string | null;
   kill_reason?: string | null;
@@ -195,6 +197,9 @@ export async function updateTask(sql: Sql, input: UpdateTaskInput): Promise<Tool
   if (given(input, 'energy')) sets.push(sql`energy = ${input.energy!}`);
   if (given(input, 'estimate_minutes')) sets.push(sql`estimate_minutes = ${input.estimate_minutes!}`);
   if (given(input, 'value')) sets.push(sql`value = ${input.value!}`);
+  if (given(input, 'ai_preparable')) sets.push(sql`ai_preparable = ${input.ai_preparable!}`);
+  if (given(input, 'review_minutes'))
+    sets.push(sql`review_minutes = ${input.review_minutes ?? null}`);
   if (given(input, 'deadline_date')) sets.push(sql`deadline_date = ${input.deadline_date ?? null}`);
   if (given(input, 'deadline_time')) sets.push(sql`deadline_time = ${input.deadline_time ?? null}`);
   if (given(input, 'target_date')) sets.push(sql`target_date = ${input.target_date ?? null}`);

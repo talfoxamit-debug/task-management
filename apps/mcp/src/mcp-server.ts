@@ -13,6 +13,7 @@ import {
   updateTask,
 } from './edit.js';
 import { getContext } from './context.js';
+import { dayPlan, setWorkHours } from './day-plan.js';
 import { commentOnTask, delegationInbox } from './delegate-inbox.js';
 import { delegateLink, listDelegationLinks, revokeDelegation } from './delegation.js';
 import { getDayAllocation, nextActions, setDayAllocation } from './next-actions.js';
@@ -153,6 +154,18 @@ export function buildServer(sql: Sql): McpServer {
                 .string()
                 .optional()
                 .describe('Required when is_recurring. e.g. FREQ=DAILY or FREQ=WEEKLY;BYDAY=MO.'),
+              ai_preparable: z
+                .boolean()
+                .optional()
+                .describe(
+                  'You can produce a usable first draft of this before Tal reaches it. Set it only after reading the task — day_plan books the REVIEW rather than the build for anything flagged, so a wrong flag books 15 minutes where 2 hours were needed.',
+                ),
+              review_minutes: z
+                .number()
+                .int()
+                .positive()
+                .optional()
+                .describe('How long reviewing your draft takes. Meaningful with ai_preparable.'),
               blocks: z.array(z.string()).optional().describe('Titles this task must precede.'),
               depends_on: z.array(z.string()).optional().describe('Titles that must finish first.'),
             }),
@@ -609,6 +622,11 @@ export function buildServer(sql: Sql): McpServer {
           .optional()
           .describe('Setting false also clears the rule. Setting true without a rule is an error.'),
         recurrence_rule: z.string().nullable().optional(),
+        ai_preparable: z
+          .boolean()
+          .optional()
+          .describe('You can draft this before Tal reaches it; day_plan then books the review.'),
+        review_minutes: z.number().int().positive().nullable().optional(),
         notes: z.string().optional(),
         kill_reason: z
           .string()
@@ -693,6 +711,42 @@ export function buildServer(sql: Sql): McpServer {
       },
     },
     async (args) => guard(() => closeMany(sql, args)),
+  );
+
+  // -------------------------------------------------------------------------
+  // The day, in hours
+  // -------------------------------------------------------------------------
+
+  server.registerTool(
+    'day_plan',
+    {
+      title: 'Today laid into hours, in execution order',
+      description:
+        'The ranking laid against the hours actually on record, as timed slots. Unlike next_actions it CHAINS dependent work inside the day: a task whose blocker is scheduled earlier today is placed after it, so "do A at 09:00 then B at 10:30 because A unblocks it" appears as two slots. Slots flagged ai_can_prepare are booked at REVIEW length because Claude is expected to draft them first — `to_prepare` lists what has to be written and by when for the plan to be honest. Returns what did not fit and why, never silently.',
+      annotations: { readOnlyHint: true },
+      inputSchema: {
+        date: civilDate.optional().describe('Defaults to today in the workspace timezone.'),
+        start_hour: z.number().int().min(0).max(23).optional().describe('Override for this call only.'),
+        end_hour: z.number().int().min(1).max(24).optional(),
+      },
+    },
+    async (args) => guard(() => dayPlan(sql, args)),
+  );
+
+  server.registerTool(
+    'set_work_hours',
+    {
+      title: 'When the day starts and ends',
+      description:
+        'The window day_plan lays work into. Without it there is no plan at all — assuming nine-to-five for someone with 28 usable hours across six days would put work in hours that are not worked and make every start time wrong. Pass day_of_week (0=Sunday) to override one weekday; omit it to set the default for every day.',
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true },
+      inputSchema: {
+        start_hour: z.number().int().min(0).max(23),
+        end_hour: z.number().int().min(1).max(24),
+        day_of_week: z.number().int().min(0).max(6).optional(),
+      },
+    },
+    async (args) => guard(() => setWorkHours(sql, args)),
   );
 
   // -------------------------------------------------------------------------

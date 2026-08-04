@@ -6,6 +6,7 @@ import { commitTasks, setMilestone } from '../src/tools.js';
 import { createPerson } from '../src/registry.js';
 import { markPrepared } from '../src/edit.js';
 import { setDayAllocation } from '../src/next-actions.js';
+import { setWorkHours } from '../src/day-plan.js';
 import type { Sql } from '../src/db.js';
 import { freshDb, taskIdByTitle, type TestDb } from './harness.js';
 
@@ -69,6 +70,8 @@ beforeAll(async () => {
       { day_of_week: 6, is_working_day: false },
     ],
   });
+
+  await setWorkHours(sql, { start_hour: 9, end_hour: 18 });
 
   await createPerson(sql, { name: 'Othman', hours_per_week: 40 });
 
@@ -232,7 +235,7 @@ describe('what the brief says', () => {
     const body = brief.text;
     expect(body).toContain('DUE');
     expect(body).toContain('Send the Lisa proposal');
-    expect(body.indexOf('DUE')).toBeLessThan(body.indexOf('WAITING ON YOU'));
+    expect(body.indexOf('DUE')).toBeLessThan(body.indexOf('THE DAY'));
   });
 
   it('surfaces a blocked delegate with how long they have been blocked', async () => {
@@ -253,24 +256,28 @@ describe('what the brief says', () => {
 
   it('never shows another person\'s work as something for Tal to do', async () => {
     const brief = await buildDailyBrief(sql);
-    const dueBlock = brief.text.slice(brief.text.indexOf('DUE'), brief.text.indexOf('FIRST'));
-    expect(dueBlock).not.toContain('Fix the booking redirect');
+    const mine = brief.text.slice(brief.text.indexOf('DUE'), brief.text.indexOf('DELEGATED'));
+    // Othman's task belongs in the delegated section, which is a different
+    // question from what Tal does today.
+    expect(mine).not.toContain('Fix the booking redirect');
   });
 
-  it('states the hours it used rather than assuming a number', async () => {
+  it('lays the day into clock times rather than bullet points', async () => {
     const brief = await buildDailyBrief(sql);
-    expect(brief.text).toMatch(/FIRST \(\d/);
+    expect(brief.text).toContain('THE DAY');
+    expect(brief.text).toMatch(/\d\d:\d\d-\d\d:\d\d /);
+    expect(brief.text).toContain('09:00');
   });
 
-  it('omits the "first" section entirely when the week is unknown', async () => {
-    await sql`update settings set default_weekly_hours = null`;
+  it('says nothing can be scheduled when the hours of the day are unknown', async () => {
+    await sql`update settings set work_start_hour = null, work_end_hour = null`;
     const brief = await buildDailyBrief(sql);
-    // An invented hours figure produces a confident answer to a question
-    // nobody asked, so the section disappears and says why.
-    expect(brief.text).not.toContain('FIRST (');
+    // Assuming a nine-to-five would put work in hours that are not worked and
+    // make every start time in the message silently wrong.
+    expect(brief.text).not.toMatch(/\d\d:\d\d-\d\d:\d\d /);
+    expect(brief.text).toContain('not on record');
     expect(brief.text).toContain('NOT KNOWN');
-    expect(brief.text).toContain('weekly hours are not on record');
-    await sql`update settings set default_weekly_hours = 28`;
+    await sql`update settings set work_start_hour = 9, work_end_hour = 18`;
   });
 
   it('fits in a Telegram message', async () => {
