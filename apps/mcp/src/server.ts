@@ -1,5 +1,6 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import mcp from './handler.js';
+import daily, { DAILY_PATH } from './daily-route.js';
 import delegate, { isDelegatePath } from './delegate-route.js';
 import telegram, { TELEGRAM_PATH } from './telegram-route.js';
 
@@ -104,6 +105,14 @@ export default async function server(
 
   if (path === TELEGRAM_PATH) {
     await telegram(req, res);
+    return;
+  }
+
+  // The 08:00 brief, fired by Vercel Cron. Authenticated inside the route,
+  // because an unauthenticated version of this is a free way for anyone to push
+  // messages to Tal's phone.
+  if (path === DAILY_PATH) {
+    await daily(req, res);
     return;
   }
 

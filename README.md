@@ -91,6 +91,7 @@ psql "$DATABASE_URL" -f supabase/tests/triggers.sql   # ends: ALL TRIGGER TESTS 
 | `DATABASE_URL` | Postgres connection string. On Supabase use the **transaction pooler** (port 6543) — serverless functions open a connection per invocation. |
 | `SUPABASE_URL` | Project URL. Only needed for documents. |
 | `SUPABASE_SERVICE_ROLE_KEY` | Service-role key, for Storage. Server-side only — it bypasses RLS, so it must never reach a browser. |
+| `CRON_SECRET` | What Vercel signs its own cron invocations with. Without it the morning brief still works (it also accepts `TASKOS_TOKEN`), but set it — an unauthenticated `/api/daily` is a free way for anyone to push messages to your phone. |
 | `TASKOS_PUBLIC_URL` | The origin delegation links are built on, e.g. `https://taskos.vercel.app`. Falls back to `VERCEL_PROJECT_PRODUCTION_URL`; without either, `delegate_link` returns a relative path and says so. |
 
 Without the last two the nine core tools work normally and the four document
@@ -299,6 +300,47 @@ would make the endpoint a free way for anyone to drive the bot.
 
 Files over 20MB are refused because Telegram will not serve them to a bot, and
 files over 5MB are pointed at `create_upload_link` instead. The reply says which.
+
+## The morning brief
+
+08:00 in `settings.active_tz`, every day the allocation says is a working day.
+`POST`-free: Vercel Cron hits `GET /api/daily`, which composes the message from
+the engine and pushes it to `TELEGRAM_ALLOWED_CHAT_IDS`.
+
+**No model writes it.** Every number in it is one the engine already computed.
+That is the same rule the rest of the system follows, and it is why the brief can
+be trusted at a glance rather than re-checked.
+
+It leads with what is due and what is blocked, not with a greeting — a brief
+whose first line is pleasant is a brief that gets swiped away. Then: what to pick
+up first in the hours actually on record, what is drafted and waiting on
+judgement, who is blocked and for how long, and the milestones inside a
+fortnight. If the weekly hours are not on record the "first" section is omitted
+entirely and the brief says so, rather than answering from an invented number.
+
+**Three things about the schedule are not obvious:**
+
+- **DST.** Vercel evaluates cron in UTC with no timezone option, so 08:00 in New
+  York is 12:00 UTC in summer and 13:00 UTC in winter. There are therefore *two*
+  schedules, and the route decides which one is actually the local morning.
+  Pinning one UTC hour would silently deliver at 07:00 for five months a year.
+- **One per local day.** Both schedules fire daily, so one is always wrong — and
+  on Vercel's Hobby plan a cron triggers *within the hour*, not on the minute, so
+  the right one can arrive late. The send window is deliberately wide (08:00 to
+  11:59 local) to absorb that, and an idempotency receipt keyed on the local date
+  is what stops a wide window becoming two messages. The receipt is written
+  *before* the send: a killed invocation should cost one missed brief, never a
+  duplicate every morning.
+- **The day off comes from the data.** Saturday is skipped because
+  `day_allocation.is_working_day` says so, not because the cron excludes it.
+  Change it with `set_day_allocation` and the brief follows, no redeploy.
+
+On a non-working day it sends **nothing** — not a message saying there is
+nothing. A notification on a day off trains you to ignore the ones on the days
+that matter.
+
+To see it without sending: `GET /api/daily?dry=1&force=1` with your bearer token
+returns the exact text.
 
 ## Delegation
 
@@ -565,19 +607,24 @@ appears on a critical path. Missed recurrences do not accumulate.
 
 ## What V1 deliberately does not have
 
-No cron, no scheduling, no Google Calendar (available hours are an argument), no
-day packing, no Asana sync, no verification integrations. V1 had to be usable the
-night it was built.
+No scheduling in the sense that matters — TaskOS still never tells you what hour
+to do something. No Google Calendar as an input (available hours are an
+argument), no day packing, no Asana sync, no verification integrations. V1 had to
+be usable the night it was built.
 
-The Telegram bot, the delegation pages and the read-only dashboard were built
-after that first night and have their own sections above. Nothing else on this
-list has moved.
+The Telegram bot, the delegation pages, the read-only dashboard and the 08:00
+brief were built after that first night and have their own sections above. The
+brief means there IS a cron now, so the second consequence below is the one that
+changed: milestone expiry is still called rather than scheduled, and that is
+still deliberate.
 
 Two consequences worth naming rather than hiding:
 
 - **Milestone expiry is called, not scheduled.** `capacity()` runs
   `taskos_expire_milestones()` at the top of every call, so a past-due milestone
-  cannot keep drawing demand from a date that has gone. There is no cron.
+  cannot keep drawing demand from a date that has gone — so it stays correct
+  without anything running on a timer, and the morning brief's cron is not load-
+  bearing for it.
 - **Outcome indicators count events, nothing more.** With no verification
   integrations, an indicator with no recorded events reports `null` — "nothing
   has been recorded" — never `0`, which would read as evidence of zero activity.
