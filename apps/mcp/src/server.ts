@@ -141,7 +141,30 @@ export default async function server(
       tokenConfigured: Boolean(process.env['TASKOS_TOKEN']),
       ...(await (async () => {
         const db = await databaseStatus();
-        return { database: db.status, ...(db.code ? { databaseCode: db.code } : {}) };
+        if (db.status !== 'connected') {
+          return { database: db.status, ...(db.code ? { databaseCode: db.code } : {}) };
+        }
+        // Migrations here are applied by hand and the code always ships first,
+        // so drift is normal rather than exceptional. Reporting it by name turns
+        // "which migration have I not run" into a question with an answer,
+        // instead of a column-does-not-exist error on the busiest write path.
+        try {
+          const { getSql } = await import('./db.js');
+          const { schemaDrift } = await import('./schema.js');
+          const drift = await schemaDrift(getSql());
+          return {
+            database: db.status,
+            schema: drift.ok ? 'current' : 'behind',
+            ...(drift.ok
+              ? {}
+              : {
+                  pendingMigration: drift.next_migration,
+                  missing: drift.missing.map((m) => `${m.table}.${m.column} (${m.migration}: ${m.feature})`),
+                }),
+          };
+        } catch {
+          return { database: db.status, schema: 'unknown' };
+        }
       })()),
     });
     return;

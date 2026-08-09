@@ -489,6 +489,32 @@ describe('5. set_outcome_target (D1: never drives demand)', () => {
 });
 
 describe('6. capacity — the main tool', () => {
+  /**
+   * Re-date the seeded milestones relative to TODAY.
+   *
+   * The seed carries fixed dates (2026-08-08, -10, -12) and the calendar walked
+   * past them, so these tests began failing on a day nobody touched the code:
+   * an expired milestone stops being active, its blocking tasks stop counting
+   * toward coverage, and assertions about coverage started describing the wall
+   * clock instead of the engine. This is the second time bomb of exactly this
+   * shape in the suite -- http.test.ts had one pinned to a hardcoded due date.
+   *
+   * The rule the fix follows: a test may assert a RELATIONSHIP to today, never
+   * a date.
+   */
+  beforeAll(async () => {
+    await sql`
+      update milestones
+         set due_date = taskos_today((select id from workspaces limit 1))
+                        + (case name
+                             when 'Site sale-ready: contract, pricing, pages' then 6
+                             when 'YachtyHub live' then 8
+                             when 'Proposal delivered to warm lead' then 10
+                             else 14 end),
+             status = 'active'
+       where status in ('active', 'missed')`;
+  });
+
   it('answers the one question, with the full hours breakdown', async () => {
     const r = await capacity(sql, { available_hours: 40 });
     expect(r['question']).toContain('what is going to slip');

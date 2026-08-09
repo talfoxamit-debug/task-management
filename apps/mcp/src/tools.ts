@@ -3,6 +3,7 @@ import { daysBetween } from '@taskos/engine';
 import { resolveWorkspaceId, timed, type Sql } from './db.js';
 import { loadPortfolio, type Portfolio } from './load.js';
 import { findReplay, isCycleRejection, isUniqueViolation, recordReceipt } from './idempotency.js';
+import { hasColumn } from './schema.js';
 import { envelope, LIST_CAP, narrow, plainConfidence, r1, r3, type ToolEnvelope } from './narrow.js';
 import { proposeForText, type InboxProposal } from './propose.js';
 import { runCapacity, runEngine } from './pipeline.js';
@@ -259,6 +260,11 @@ export async function commitTasks(
       const people = await tx<Array<{ id: string; name: string }>>`
         select id, name from people where workspace_id = ${workspaceId}`;
 
+      // Whether the optional column from 0014 is there. Checked once per
+      // commit, cached for a minute, and NEVER allowed to fail the write: an
+      // un-run migration must cost the flag, not the task.
+      const canPrepare = await hasColumn(tx, 'tasks', 'ai_preparable');
+
       const created: Array<{ id: string; title: string; venture: string }> = [];
       const titleToId = new Map<string, string>();
 
@@ -320,7 +326,12 @@ export async function commitTasks(
           // from the title: the day plan books the REVIEW rather than the build
           // for anything flagged here, so a wrong flag books fifteen minutes
           // where two hours were needed.
-          ai_preparable: t.ai_preparable ?? false,
+          //
+          // GUARDED on the column existing. Naming a column that migration 0014
+          // has not created fails the whole INSERT, which took task creation
+          // down entirely — the one thing this system must never be unable to do
+          // — for the sake of an optional flag.
+          ...(canPrepare ? { ai_preparable: t.ai_preparable ?? false } : {}),
           ...(t.review_minutes != null ? { review_minutes: t.review_minutes } : {}),
         };
 

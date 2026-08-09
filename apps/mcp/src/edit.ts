@@ -1,5 +1,6 @@
 import { resolveWorkspaceId, type Queryable, type Sql } from './db.js';
 import { findReplay, isCycleRejection, recordReceipt } from './idempotency.js';
+import { hasColumn } from './schema.js';
 import { envelope, narrow, plainConfidence, type ToolEnvelope } from './narrow.js';
 import { ACTOR } from './tools.js';
 
@@ -197,7 +198,10 @@ export async function updateTask(sql: Sql, input: UpdateTaskInput): Promise<Tool
   if (given(input, 'energy')) sets.push(sql`energy = ${input.energy!}`);
   if (given(input, 'estimate_minutes')) sets.push(sql`estimate_minutes = ${input.estimate_minutes!}`);
   if (given(input, 'value')) sets.push(sql`value = ${input.value!}`);
-  if (given(input, 'ai_preparable')) sets.push(sql`ai_preparable = ${input.ai_preparable!}`);
+  // Guarded on the column existing: an un-run migration 0014 must cost this
+  // one field, never the whole correction.
+  if (given(input, 'ai_preparable') && (await hasColumn(sql, 'tasks', 'ai_preparable')))
+    sets.push(sql`ai_preparable = ${input.ai_preparable!}`);
   if (given(input, 'review_minutes'))
     sets.push(sql`review_minutes = ${input.review_minutes ?? null}`);
   if (given(input, 'deadline_date')) sets.push(sql`deadline_date = ${input.deadline_date ?? null}`);

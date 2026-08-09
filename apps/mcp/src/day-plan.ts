@@ -2,6 +2,7 @@ import { resolveWorkspaceId, today as todayFor, type Sql } from './db.js';
 import { loadPortfolio } from './load.js';
 import { runEngine } from './pipeline.js';
 import { envelope, plainConfidence, type ToolEnvelope } from './narrow.js';
+import { hasColumn } from './schema.js';
 
 /**
  * The day, laid into hours.
@@ -77,6 +78,27 @@ export async function buildDayPlan(
   const dowRows = await sql<Array<{ d: number }>>`
     select extract(dow from ${date}::date)::int as d`;
   const dow = dowRows[0]!.d;
+
+  // Migration 0014 may not have been run. Naming a column that does not exist
+  // fails the whole SELECT, which would take the morning brief down with it —
+  // so the absence is detected first and reported as "no hours on record",
+  // which is exactly what it means.
+  const hasHours = await hasColumn(sql, 'settings', 'work_start_hour');
+  if (!hasHours) {
+    return {
+      date,
+      working: true,
+      day_venture: null,
+      window: null,
+      slots: [],
+      unplaced: [],
+      to_prepare: [],
+      notes: [
+        'the hours of your day are not on record, so there is nothing to lay a plan against',
+        'migration 0014 has not been applied to this database yet — until it is, there is no column to store them in',
+      ],
+    };
+  }
 
   const cfg = await sql<
     Array<{
@@ -161,6 +183,7 @@ export async function buildDayPlan(
     }
   }
 
+  const canPrepare = await hasColumn(sql, 'tasks', 'ai_preparable');
   const prep = await sql<
     Array<{
       id: string;
@@ -170,7 +193,8 @@ export async function buildDayPlan(
       review_minutes: number | null;
     }>
   >`
-    select id, ai_preparable, prepared_at, prepared_summary, review_minutes
+    select id, ${canPrepare ? sql`ai_preparable` : sql`false as ai_preparable`},
+           prepared_at, prepared_summary, review_minutes
       from tasks where workspace_id = ${workspaceId} and status not in ('done', 'killed')`;
   const prepById = new Map(prep.map((p) => [p.id, p]));
 
