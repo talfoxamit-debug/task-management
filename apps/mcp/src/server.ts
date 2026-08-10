@@ -151,10 +151,28 @@ export default async function server(
         try {
           const { getSql } = await import('./db.js');
           const { schemaDrift } = await import('./schema.js');
+          const { lastBriefStatus } = await import('./daily-route.js');
           const drift = await schemaDrift(getSql());
+          const brief = await lastBriefStatus(getSql()).catch(() => null);
           return {
             database: db.status,
             schema: drift.ok ? 'current' : 'behind',
+            // The morning brief failed silently for two days because a 401 from
+            // a public endpoint looks like nothing at all. Now its absence is
+            // reportable rather than only noticeable.
+            dailyBrief: brief
+              ? {
+                  lastRun: brief.last_sent_date,
+                  daysSince: brief.days_since,
+                  ...(brief.days_since !== null && brief.days_since > 1
+                    ? { warning: 'the morning brief has not run recently' }
+                    : {}),
+                  ...(brief.last_sent_date === null
+                    ? { warning: 'the morning brief has never run' }
+                    : {}),
+                }
+              : 'unknown',
+            cronSecretConfigured: Boolean(process.env['CRON_SECRET']),
             ...(drift.ok
               ? {}
               : {

@@ -102,6 +102,35 @@ describe('who may fire it', () => {
     expect(((await res.json()) as { ok: boolean }).ok).toBe(false);
   });
 
+  it('ACCEPTS VERCEL\'S OWN CRON when CRON_SECRET is unset — the outage', async () => {
+    // Vercel attaches an Authorization header to a cron invocation only when
+    // CRON_SECRET is set. Requiring one meant Vercel's cron got a 401 twice
+    // every morning and the brief never arrived, with nothing to see anywhere.
+    delete process.env['CRON_SECRET'];
+    const res = await fetch(`${origin}/api/daily?dry=1`, {
+      headers: { 'user-agent': 'vercel-cron/1.0' },
+    });
+    expect(res.status).toBe(200);
+  });
+
+  it('still refuses an ordinary anonymous request', async () => {
+    delete process.env['CRON_SECRET'];
+    const res = await fetch(`${origin}/api/daily?dry=1`, {
+      headers: { 'user-agent': 'curl/8.0' },
+    });
+    expect(res.status).toBe(401);
+  });
+
+  it('goes strict again the moment CRON_SECRET is set', async () => {
+    process.env['CRON_SECRET'] = 'cron-secret-value';
+    // The relaxation exists only to keep the feature alive without it; setting
+    // it must close the door rather than add a second one.
+    const spoofed = await fetch(`${origin}/api/daily?dry=1`, {
+      headers: { 'user-agent': 'vercel-cron/1.0' },
+    });
+    expect(spoofed.status).toBe(401);
+  });
+
   it('accepts the CRON_SECRET Vercel signs its own invocations with', async () => {
     process.env['CRON_SECRET'] = 'cron-secret-value';
     const res = await fetch(`${origin}/api/daily?dry=1`, {

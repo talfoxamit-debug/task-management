@@ -49,21 +49,67 @@ function constantTimeEquals(a: string, b: string): boolean {
 /**
  * Who may fire this.
  *
- * Vercel signs its own cron invocations with CRON_SECRET when that variable is
- * set; TASKOS_TOKEN is accepted too so the brief can be triggered by hand to
- * see what it looks like. Unauthenticated access would let anyone on the
- * internet push messages to Tal's phone, which is a nuisance attack that needs
- * no skill at all.
+ * THE FIRST VERSION OF THIS FUNCTION LOCKED OUT THE ONLY CALLER IT HAD. Vercel
+ * attaches `Authorization: Bearer $CRON_SECRET` to a cron invocation ONLY when
+ * that variable is set; with it unset it sends no Authorization header at all.
+ * So requiring one meant Vercel's own cron got a 401 every morning, twice, and
+ * the brief never arrived — with nothing to see anywhere, because a 401 is a
+ * perfectly ordinary thing for a public endpoint to return.
+ *
+ * The fix is not "document that CRON_SECRET is required". A feature that is
+ * silently dead until an env var is set is a feature that is silently dead. So:
+ *
+ *   - CRON_SECRET set   -> require it. Strict, and what should be configured.
+ *   - CRON_SECRET unset -> accept Vercel's cron user-agent, and say so in the
+ *     log every time.
+ *
+ * That second branch is a real, bounded relaxation rather than a hole. The
+ * user-agent is spoofable, so treat it as no credential at all and ask what an
+ * attacker gains: the response body carries no portfolio data, the brief goes to
+ * Tal's own Telegram and nowhere else, and the once-per-day receipt means the
+ * most that can be forced is one extra copy of a message Tal was going to get
+ * anyway, inside a four-hour morning window. Weighed against never receiving it,
+ * that is the right trade — and it disappears the moment CRON_SECRET is set.
  */
-function authorised(req: IncomingMessage): boolean {
+function authorised(req: IncomingMessage): { ok: boolean; unsigned?: boolean } {
   const header = req.headers['authorization'];
   const presented = Array.isArray(header) ? header[0] : header;
 
   const cronSecret = process.env['CRON_SECRET'];
-  if (cronSecret && presented && constantTimeEquals(presented, `Bearer ${cronSecret}`)) {
-    return true;
+  if (cronSecret) {
+    if (presented && constantTimeEquals(presented, `Bearer ${cronSecret}`)) return { ok: true };
+    // Still allow a hand-triggered run with the ordinary bearer token.
+    return { ok: checkCredential(presented, req.url).ok };
   }
-  return checkCredential(presented, req.url).ok;
+
+  if (checkCredential(presented, req.url).ok) return { ok: true };
+
+  const agent = String(req.headers['user-agent'] ?? '');
+  if (/vercel-cron/i.test(agent)) return { ok: true, unsigned: true };
+
+  return { ok: false };
+}
+
+/**
+ * Did the brief go out, and when.
+ *
+ * Reported by /health, because the failure this endpoint actually had was
+ * SILENT: the cron fired, got a 401, and nothing anywhere said the morning
+ * message was not being delivered. A feature that only reveals its absence by
+ * the user noticing they feel unserved is a feature with no monitoring at all.
+ */
+export async function lastBriefStatus(sql: ReturnType<typeof getSql>): Promise<{
+  last_sent_date: string | null;
+  days_since: number | null;
+}> {
+  const rows = await sql<Array<{ key: string; at: Date }>>`
+    select idempotency_key as key, at from events
+     where verb in ('daily_brief', 'daily_brief_skipped')
+     order by at desc limit 1`;
+  if (rows.length === 0) return { last_sent_date: null, days_since: null };
+  const date = rows[0]!.key.replace('daily-brief:', '');
+  const days = Math.floor((Date.now() - rows[0]!.at.getTime()) / 86_400_000);
+  return { last_sent_date: date, days_since: days };
 }
 
 export default async function dailyRoute(
@@ -77,9 +123,15 @@ export default async function dailyRoute(
     res.end(JSON.stringify(body));
   };
 
-  if (!authorised(req)) {
+  const auth = authorised(req);
+  if (!auth.ok) {
     reply(401, { ok: false, error: 'unauthorized' });
     return;
+  }
+  if (auth.unsigned) {
+    console.log(
+      '[taskos] daily brief fired by an UNSIGNED cron invocation: CRON_SECRET is not set on this project, so Vercel sends no Authorization header. Set it to close this.',
+    );
   }
 
   const url = new URL(req.url ?? '/', 'http://localhost');
