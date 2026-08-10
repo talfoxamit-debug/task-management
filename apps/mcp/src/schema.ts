@@ -23,12 +23,22 @@ import type { Queryable } from './db.js';
  *      rather than a search through a directory.
  */
 
-/** Columns added after the initial schema, and the feature each one carries. */
+/**
+ * Columns added after the initial schema, and the feature each one carries.
+ *
+ * `nullable: true` means the migration RELAXED an existing column rather than
+ * adding one. That case exists because 0015 makes delegation_tokens.person_id
+ * nullable and adds no column at all — so a checker that only looked for
+ * missing columns would report "current" while owner_link failed on a not-null
+ * violation, which is precisely the silent-drift failure this file was written
+ * to end.
+ */
 export const EXPECTED_COLUMNS: Array<{
   table: string;
   column: string;
   migration: string;
   feature: string;
+  nullable?: true;
 }> = [
   { table: 'settings', column: 'default_weekly_hours', migration: '0008', feature: 'the stored working week' },
   { table: 'people', column: 'hours_per_week', migration: '0010', feature: 'delegated capacity' },
@@ -41,11 +51,20 @@ export const EXPECTED_COLUMNS: Array<{
   { table: 'tasks', column: 'ai_preparable', migration: '0014', feature: 'AI-drafted slots in day_plan' },
   { table: 'settings', column: 'work_start_hour', migration: '0014', feature: 'the hours of the day' },
   { table: 'day_allocation', column: 'start_hour', migration: '0014', feature: 'per-weekday hours' },
+  {
+    table: 'delegation_tokens',
+    column: 'person_id',
+    migration: '0015',
+    feature: "Tal's own page (owner_link)",
+    nullable: true,
+  },
 ];
 
 interface Snapshot {
   at: number;
   present: Set<string>;
+  /** table.column for every column the database allows NULL in. */
+  nullable: Set<string>;
 }
 
 let cache: Snapshot | null = null;
@@ -62,12 +81,17 @@ const TTL_MS = 60_000;
 async function snapshot(sql: Queryable, now: number): Promise<Snapshot> {
   if (cache && now - cache.at < TTL_MS) return cache;
 
-  const rows = await sql<Array<{ table_name: string; column_name: string }>>`
-    select table_name, column_name from information_schema.columns
+  const rows = await sql<
+    Array<{ table_name: string; column_name: string; is_nullable: string }>
+  >`
+    select table_name, column_name, is_nullable from information_schema.columns
      where table_schema = 'public'`;
   cache = {
     at: now,
     present: new Set(rows.map((r) => `${r.table_name}.${r.column_name}`)),
+    nullable: new Set(
+      rows.filter((r) => r.is_nullable === 'YES').map((r) => `${r.table_name}.${r.column_name}`),
+    ),
   };
   return cache;
 }
@@ -103,9 +127,12 @@ export interface SchemaDrift {
  */
 export async function schemaDrift(sql: Queryable): Promise<SchemaDrift> {
   const snap = await snapshot(sql, Date.now());
-  const missing = EXPECTED_COLUMNS.filter(
-    (e) => !snap.present.has(`${e.table}.${e.column}`),
-  );
+  const missing = EXPECTED_COLUMNS.filter((e) => {
+    const key = `${e.table}.${e.column}`;
+    if (!snap.present.has(key)) return true;
+    // Present but still NOT NULL where the migration was supposed to relax it.
+    return Boolean(e.nullable) && !snap.nullable.has(key);
+  });
   const next = missing.length > 0 ? missing.map((m) => m.migration).sort()[0]! : null;
   return { ok: missing.length === 0, missing, next_migration: next };
 }

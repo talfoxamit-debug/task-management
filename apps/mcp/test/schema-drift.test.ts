@@ -107,6 +107,24 @@ describe('a database one migration behind', () => {
     expect(plan.notes.join(' ')).toContain('0014');
   });
 
+  it('catches a migration that RELAXES a column rather than adding one', async () => {
+    // 0015 adds no column at all -- it makes delegation_tokens.person_id
+    // nullable. A checker that only looked for missing columns would report
+    // "current" while owner_link failed on a not-null violation, which is the
+    // exact silent drift this file exists to end.
+    await sql`update delegation_tokens set person_id =
+                (select id from people limit 1) where person_id is null`;
+    await sql`alter table delegation_tokens alter column person_id set not null`;
+    forgetSchema();
+
+    const drift = await schemaDrift(sql);
+    expect(drift.ok).toBe(false);
+    expect(drift.missing.some((m) => m.migration === '0015')).toBe(true);
+
+    await sql`alter table delegation_tokens alter column person_id drop not null`;
+    forgetSchema();
+  });
+
   it('names exactly what is missing, and which migration to run', async () => {
     const drift = await schemaDrift(sql);
     expect(drift.ok).toBe(false);
