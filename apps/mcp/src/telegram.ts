@@ -154,7 +154,7 @@ export interface TelegramUpdate {
   update_id?: number;
   message?: {
     message_id?: number;
-    chat?: { id?: number | string };
+    chat?: { id?: number | string; title?: string };
     text?: string;
     caption?: string;
     document?: { file_id: string; file_name?: string; mime_type?: string; file_size?: number };
@@ -185,13 +185,36 @@ export async function handleUpdate(
   const chatId = String(message.chat?.id ?? '');
   if (!chatId) return { handled: false, reason: 'no chat id' };
 
+  const text = (message.text ?? '').trim();
+
+  // THE ONE EXCEPTION to the allow-list, and it is as narrow as it can be made:
+  // this command, a code that must already exist unredeemed and unexpired, and
+  // nothing else. It is what lets a group chat with Othman identify itself once
+  // so the bot can send work there.
+  //
+  // A paired chat gains OUTBOUND delivery only. It never joins
+  // TELEGRAM_ALLOWED_CHAT_IDS, so it can never run a command, and the gate
+  // below still refuses it on the very next message.
+  if (text.startsWith('/taskos')) {
+    const code = text.slice('/taskos'.length).trim();
+    if (code.length === 0) {
+      return { handled: true, chatId, reply: 'Send /taskos followed by the code Tal gave you.' };
+    }
+    const { redeemPairingCode } = await import('./worker-chat.js');
+    const result = await redeemPairingCode(
+      sql,
+      code,
+      chatId,
+      message.chat?.title ?? null,
+    );
+    return { handled: true, chatId, reply: result.reply };
+  }
+
   // Gate two. Silence, not an error message: telling an unknown sender that the
   // bot exists and rejected them is more than they need to know.
   if (!cfg.allowedChatIds.has(chatId)) {
     return { handled: false, reason: `chat ${chatId} is not on the allow-list` };
   }
-
-  const text = (message.text ?? '').trim();
 
   if (text.startsWith('/start') || text.startsWith('/help')) {
     return { handled: true, chatId, reply: HELP };

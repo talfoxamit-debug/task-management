@@ -141,6 +141,14 @@ describe('the agent instructions', () => {
     expect(INSTRUCTIONS).toContain('bookmark');
   });
 
+  it('keep the approval step in front of anything that reaches a person', () => {
+    expect(INSTRUCTIONS).toContain('send_work_to_person');
+    // The rule Tal stated: he is the final sender. A tool that delivered on
+    // assignment would overturn it silently.
+    expect(INSTRUCTIONS).toContain('ONLY WHEN HE SAYS SEND');
+    expect(INSTRUCTIONS).toContain('verbatim');
+  });
+
   it('stay short enough to survive a context window', () => {
     // Guidance nobody reads is guidance that does not exist. This is roughly
     // 1.5k tokens; well past that and it competes with the conversation.

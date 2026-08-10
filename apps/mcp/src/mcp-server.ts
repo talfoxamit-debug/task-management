@@ -15,6 +15,7 @@ import {
 import { getContext } from './context.js';
 import { dayPlan, setWorkHours } from './day-plan.js';
 import { commentOnTask, delegationInbox } from './delegate-inbox.js';
+import { pairPersonChat, sendWorkToPerson } from './worker-chat.js';
 import { delegateLink, listDelegationLinks, ownerLink, revokeDelegation } from './delegation.js';
 import { getDayAllocation, nextActions, setDayAllocation } from './next-actions.js';
 import {
@@ -964,6 +965,40 @@ export function buildServer(sql: Sql): McpServer {
       },
     },
     async (args) => guard(() => ownerLink(sql, args)),
+  );
+
+  server.registerTool(
+    'pair_person_chat',
+    {
+      title: 'Connect a person to the Telegram chat you share',
+      description:
+        'Return a one-time code that binds a Telegram chat to a person, so work can be SENT to them instead of Tal copy-pasting a link. Tal adds the bot to the chat he already has with them and sends "/taskos <code>" there. The code is single-use and expires in 30 minutes. A paired chat can RECEIVE only — it never gains the ability to run commands or see anything but that person\'s own page.',
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false },
+      inputSchema: { person: z.string().describe('Exact name, as recorded by create_person.') },
+    },
+    async (args) => guard(() => pairPersonChat(sql, args)),
+  );
+
+  server.registerTool(
+    'send_work_to_person',
+    {
+      title: 'Send approved work to their chat',
+      description:
+        'Deliver a message and their link to a paired person\'s Telegram chat. SENT VERBATIM — draft it, show it to Tal, and call this only once he says send. Never call it on your own initiative after assigning something: assignments get made provisionally during planning, and work that reaches somebody before Tal has decided is exactly the failure he built the review step to avoid. Requires pair_person_chat first.',
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false },
+      inputSchema: {
+        person: z.string(),
+        message: z.string().optional().describe('What Tal approved. Sent unchanged.'),
+        include_link: z
+          .boolean()
+          .optional()
+          .describe('Default true. Mints a fresh link to their page and appends it.'),
+        scope: z.enum(['person', 'task']).optional(),
+        task_id: z.string().optional(),
+        idempotency_key: z.string().optional(),
+      },
+    },
+    async (args) => guard(() => sendWorkToPerson(sql, args)),
   );
 
   server.registerTool(

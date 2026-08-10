@@ -204,7 +204,19 @@ export default async function dailyRoute(
     });
 
     await notifyOwner(brief.text);
-    reply(200, { ok: true, sent: true, date: brief.date });
+
+    // Chasing runs after the brief, never before: if it throws, Tal has already
+    // had his morning message. It is also bounded to one nudge per task per day
+    // by a row it claims first, so two cron schedules cannot double-send.
+    let nudged = 0;
+    try {
+      const { sendNudges } = await import('./worker-chat.js');
+      nudged = await sendNudges(sql, brief.date);
+    } catch (e) {
+      console.log(`[taskos] nudges failed: ${e instanceof Error ? e.message : String(e)}`);
+    }
+
+    reply(200, { ok: true, sent: true, date: brief.date, nudged });
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);
     console.log(`[taskos] daily brief failed: ${message}`);

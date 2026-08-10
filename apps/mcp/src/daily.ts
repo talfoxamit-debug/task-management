@@ -185,8 +185,21 @@ export async function buildDailyBrief(sql: Sql, date?: string): Promise<DailyBri
      where workspace_id = ${workspaceId} and author_kind = 'delegate'
        and read_by_owner_at is null`;
 
-  if (blocked.length > 0 || (unread[0]?.n ?? 0) > 0) {
+  // What they actually finished. Without this the delegated section is a list
+  // of problems, which is a misleading picture of people who are mostly doing
+  // the work.
+  const finished = await sql<Array<{ person: string; n: number }>>`
+    select p.name as person, count(*)::int as n
+      from tasks t join people p on p.id = t.actual_by_person_id
+     where t.workspace_id = ${workspaceId} and t.status = 'done'
+       and t.closed_at > now() - interval '24 hours'
+     group by p.name order by n desc`;
+
+  if (blocked.length > 0 || (unread[0]?.n ?? 0) > 0 || finished.length > 0) {
     lines.push('', 'DELEGATED');
+    for (const f of finished) {
+      lines.push(`• ${f.person} finished ${f.n} since yesterday`);
+    }
     for (const b of blocked) {
       lines.push(
         `• BLOCKED ${b.days}d — ${b.person ?? 'unassigned'}: ${b.title}`,
