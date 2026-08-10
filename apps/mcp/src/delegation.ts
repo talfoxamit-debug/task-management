@@ -20,16 +20,19 @@ import { envelope, narrow, plainConfidence, type ToolEnvelope } from './narrow.j
  * a first-class operation rather than an afterthought.
  */
 
-export type Scope = 'person' | 'task' | 'calendar';
+export type Scope = 'person' | 'task' | 'calendar' | 'owner';
 
 const PREFIX: Record<Scope, string> = {
   person: 'tdp_',
   task: 'tdt_',
   calendar: 'tdc_',
+  // Tal's own. A distinct prefix so a token in a log or a screenshot is
+  // identifiable as the wide one without resolving it.
+  owner: 'tdo_',
 };
 
 /** Recognise a token before touching the database, and reject anything else. */
-const TOKEN_RE = /^td[ptc]_[A-Za-z0-9_-]{43}$/;
+const TOKEN_RE = /^td[ptco]_[A-Za-z0-9_-]{43}$/;
 
 export function looksLikeToken(raw: string): boolean {
   return TOKEN_RE.test(raw);
@@ -55,7 +58,10 @@ export function publicUrl(): string | null {
 }
 
 function pathFor(scope: Scope, raw: string): string {
-  return scope === 'person' ? `/p/${raw}` : scope === 'task' ? `/d/${raw}` : `/c/${raw}.ics`;
+  if (scope === 'person') return `/p/${raw}`;
+  if (scope === 'task') return `/d/${raw}`;
+  if (scope === 'owner') return `/me/${raw}`;
+  return `/c/${raw}.ics`;
 }
 
 export function linkFor(scope: Scope, raw: string): string {
@@ -69,8 +75,9 @@ export function linkFor(scope: Scope, raw: string): string {
 
 export interface ResolvedToken {
   token_id: string;
-  workspace_id: string;
+  /** NULL only for an owner token: Tal is not a row in `people`. */
   person_id: string;
+  workspace_id: string;
   person_name: string;
   scope: Scope;
   task_id: string | null;
@@ -117,7 +124,7 @@ export async function resolveToken(sql: Sql, raw: string): Promise<Resolution> {
       id: string;
       workspace_id: string;
       person_id: string;
-      person_name: string;
+      person_name: string | null;
       scope: Scope;
       task_id: string | null;
       token_hash: string;
@@ -134,7 +141,10 @@ export async function resolveToken(sql: Sql, raw: string): Promise<Resolution> {
             and k.closed_at <= now() - ${`${APPROVAL_GRACE_MINUTES} minutes`}::interval)
              as completed
       from delegation_tokens t
-      join people p on p.id = t.person_id
+      -- LEFT join: an owner token has no person, and an inner join would make
+      -- it resolve as 'unknown' -- an authentication failure that looks exactly
+      -- like a bad token and would be hunted for hours.
+      left join people p on p.id = t.person_id
       left join tasks k on k.id = t.task_id
      where t.token_hash = ${hash(raw)}
      limit 1
@@ -173,7 +183,7 @@ export async function resolveToken(sql: Sql, raw: string): Promise<Resolution> {
       token_id: row.id,
       workspace_id: row.workspace_id,
       person_id: row.person_id,
-      person_name: row.person_name,
+      person_name: row.person_name ?? 'Tal',
       scope: row.scope,
       task_id: row.task_id,
       superseded_link: supersededLink,
@@ -419,7 +429,7 @@ export async function listDelegationLinks(
     Array<{
       id: string;
       token_prefix: string;
-      person: string;
+      person: string | null;
       scope: string;
       task: string | null;
       created_at: Date;
@@ -432,7 +442,10 @@ export async function listDelegationLinks(
     select d.id, d.token_prefix, p.name as person, d.scope, t.title as task,
            d.created_at, d.expires_at, d.revoked_at, d.fetch_count, d.acted_at
       from delegation_tokens d
-      join people p on p.id = d.person_id
+      -- LEFT, for the same reason revoke_delegation takes no join at all: an
+      -- owner token has no person, and an inner join would hide the one link
+      -- that reaches everything.
+      left join people p on p.id = d.person_id
       left join tasks t on t.id = d.task_id
      where d.workspace_id = ${workspaceId}
        ${input.person ? sql`and p.name = ${input.person}` : sql``}
@@ -443,7 +456,7 @@ export async function listDelegationLinks(
     rows.map((r) => ({
       token_id: r.id,
       token_prefix: r.token_prefix,
-      person: r.person,
+      person: r.person ?? "Tal (owner link)",
       scope: r.scope,
       task: r.task,
       issued: r.created_at.toISOString().slice(0, 10),
@@ -476,15 +489,22 @@ export async function revokeDelegation(
     ]);
   }
 
+  // NO JOIN TO people. An owner token has no person, and joining dropped it
+  // from the result set entirely -- which meant the widest credential in the
+  // system was the one link that could not be revoked. The person filter is a
+  // subquery so it constrains only when it is actually asked for.
   const rows = await sql<Array<{ id: string; token_prefix: string }>>`
     update delegation_tokens d
        set revoked_at = now(), revoked_reason = ${input.reason ?? 'revoked by Tal'}
-      from people p
-     where p.id = d.person_id
-       and d.workspace_id = ${workspaceId} and d.revoked_at is null
+     where d.workspace_id = ${workspaceId} and d.revoked_at is null
        ${input.token_id ? sql`and d.id = ${input.token_id}` : sql``}
        ${input.token_prefix ? sql`and d.token_prefix = ${input.token_prefix}` : sql``}
-       ${input.person ? sql`and p.name = ${input.person}` : sql``}
+       ${
+         input.person
+           ? sql`and d.person_id = (select id from people
+                                     where workspace_id = ${workspaceId} and name = ${input.person})`
+           : sql``
+       }
      returning d.id, d.token_prefix`;
 
   return envelope(
@@ -494,5 +514,73 @@ export async function revokeDelegation(
         : ['revocation is immediate: the next request on those links is refused'],
     ),
     { revoked: rows.length, tokens: rows.map((r) => r.token_prefix) },
+  );
+}
+
+// ---------------------------------------------------------------------------
+// owner_link — Tal's own page
+// ---------------------------------------------------------------------------
+
+/**
+ * Mint the link to Tal's own page.
+ *
+ * Separate from delegate_link rather than another scope on it, because the two
+ * are different decisions with different consequences and a shared tool would
+ * make the wide one reachable by a typo. This one takes no person, and it says
+ * plainly in its notes what it is handing over.
+ */
+export async function ownerLink(
+  sql: Sql,
+  input: { rotate?: boolean; grace_hours?: number; label?: string } = {},
+): Promise<ToolEnvelope> {
+  const workspaceId = await resolveWorkspaceId(sql);
+
+  const live = await sql<Array<{ id: string; token_prefix: string; created_at: Date }>>`
+    select id, token_prefix, created_at from delegation_tokens
+     where workspace_id = ${workspaceId} and scope = 'owner'
+       and revoked_at is null and superseded_by is null`;
+
+  if (live.length > 0 && !input.rotate) {
+    return envelope(
+      plainConfidence([
+        'a link already exists and cannot be shown again — only its hash is stored',
+        'pass rotate:true to replace it; the old one keeps working for the grace window',
+      ]),
+      {
+        link: null,
+        already_live: true,
+        token_prefix: live[0]!.token_prefix,
+        issued: live[0]!.created_at.toISOString().slice(0, 10),
+      },
+    );
+  }
+
+  const { raw, hash: tokenHash, prefix } = mint('owner');
+  const id = randomUUID();
+
+  await sql.begin(async (tx) => {
+    if (live.length > 0) {
+      const grace = Math.max(0, input.grace_hours ?? 24);
+      await tx`
+        update delegation_tokens
+           set superseded_by = ${id},
+               expires_at = now() + ${`${grace} hours`}::interval
+         where id = ${live[0]!.id}`;
+    }
+    await tx`
+      insert into delegation_tokens (id, workspace_id, person_id, scope, token_hash,
+                                     token_prefix, label)
+      values (${id}, ${workspaceId}, null, 'owner', ${tokenHash}, ${prefix},
+              ${input.label ?? 'Tal own page'})`;
+  });
+
+  return envelope(
+    plainConfidence([
+      'THIS IS THE WIDEST CREDENTIAL IN THE SYSTEM: anyone holding it can read the whole portfolio',
+      'it can mark work done and undo that within 15 minutes, and nothing else — it cannot kill, delete or edit',
+      'shown exactly once; only its hash is stored, so it cannot be recovered — bookmark it now',
+      'revoke it with revoke_delegation if it ends up anywhere it should not be',
+    ]),
+    { link: linkFor('owner', raw), rotated: live.length > 0, token_prefix: prefix },
   );
 }

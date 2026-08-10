@@ -8,6 +8,8 @@ import {
   recentlyClosed,
 } from './delegate-data.js';
 import { renderDelegatePage, renderGone } from './delegate-html.js';
+import { renderOwnerPage } from './owner-html.js';
+import { loadOwnerView, ownerClose, ownerUndo } from './owner-page.js';
 import { buildCalendar, icsFilename } from './ics.js';
 import { resolveToken, stampFetch, type ResolvedToken } from './delegation.js';
 import { notifyOwner } from './telegram.js';
@@ -43,12 +45,14 @@ const TASK_ICS = new RegExp(
 );
 /** `/c/<token>.ics` — the subscribable feed. */
 const FEED = new RegExp(`^/c/(td[ptc]_${TOKEN})\\.ics$`);
+/** `/me/<token>` — Tal's own page, and its two POSTs. */
+const OWNER = new RegExp(`^/me/(tdo_${TOKEN})(?:/(close|undo))?$`);
 
 /** A comment is capped at 4000 characters; nothing legitimate approaches this. */
 const MAX_BODY_BYTES = 64_000;
 
 export function isDelegatePath(path: string): boolean {
-  return PAGE.test(path) || TASK_ICS.test(path) || FEED.test(path);
+  return PAGE.test(path) || TASK_ICS.test(path) || FEED.test(path) || OWNER.test(path);
 }
 
 /**
@@ -141,16 +145,17 @@ export default async function delegateRoute(
 
   const feed = FEED.exec(path);
   const taskIcs = TASK_ICS.exec(path);
+  const owner = OWNER.exec(path);
   const page = PAGE.exec(path);
 
-  const rawToken = feed?.[1] ?? taskIcs?.[2] ?? page?.[2];
+  const rawToken = feed?.[1] ?? taskIcs?.[2] ?? owner?.[1] ?? page?.[2];
   if (!rawToken) {
     const gone = renderGone('unknown');
     html(res, gone.status, gone.html, head);
     return;
   }
 
-  const action = page?.[3];
+  const action = page?.[3] ?? owner?.[2];
   if (action && method !== 'POST') {
     // The whole undo/close/comment surface is POST-only, and saying so with 405
     // rather than 404 makes a mis-typed link diagnosable.
@@ -182,6 +187,20 @@ export default async function delegateRoute(
   // screen nobody audits. It is a separate row from the person link precisely so
   // it cannot close anything, and that separation only holds if the scopes
   // cannot be used at each other's paths.
+  // The scopes are separate rows precisely so they cannot be used at each
+  // other's paths. An owner token is the widest credential here and must reach
+  // only its own page; a delegate token must never reach the owner page.
+  if (owner && token.scope !== 'owner') {
+    const gone = renderGone('unknown');
+    html(res, gone.status, gone.html, head);
+    return;
+  }
+  if (!owner && token.scope === 'owner') {
+    const gone = renderGone('unknown');
+    html(res, gone.status, gone.html, head);
+    return;
+  }
+
   if (feed && token.scope !== 'calendar') {
     const gone = renderGone('unknown');
     html(res, gone.status, gone.html, head);
@@ -193,7 +212,15 @@ export default async function delegateRoute(
     return;
   }
 
-  const base = `/${token.scope === 'task' ? 'd' : 'p'}/${rawToken}`;
+  const base =
+    token.scope === 'owner'
+      ? `/me/${rawToken}`
+      : `/${token.scope === 'task' ? 'd' : 'p'}/${rawToken}`;
+
+  if (owner) {
+    await handleOwner(req, res, token, base, action, head);
+    return;
+  }
 
   if (feed) {
     await handleFeed(res, token, head);
@@ -387,4 +414,64 @@ async function titleOf(
   const rows = await sql<Array<{ title: string }>>`
     select title from tasks where id = ${taskId}`;
   return rows[0]?.title ?? 'a task';
+}
+
+// ---------------------------------------------------------------------------
+// Tal's own page
+// ---------------------------------------------------------------------------
+
+/**
+ * The owner page: read everything, change exactly two things.
+ *
+ * The narrowness is the point. This token reaches the whole portfolio, so the
+ * mutations it can perform are held to close and undo — a stolen link can read,
+ * and can mark something done that a fifteen-minute undo reverses. It cannot
+ * kill, delete, edit, reassign or mint another link.
+ */
+async function handleOwner(
+  req: IncomingMessage & { body?: unknown },
+  res: ServerResponse,
+  token: ResolvedToken,
+  base: string,
+  action: string | undefined,
+  head: boolean,
+): Promise<void> {
+  const sql = getSql();
+
+  if (!action) {
+    await stampFetch(sql, token.token_id);
+    const url = new URL(req.url ?? '/', 'http://localhost');
+    const view = await withDeadline('owner.page', 20_000, () => loadOwnerView(sql, token));
+    html(res, 200, renderOwnerPage(view, { base, flash: url.searchParams.get('m') }), head);
+    return;
+  }
+
+  let form: URLSearchParams;
+  try {
+    form = await readForm(req);
+  } catch {
+    redirect(res, `${base}?m=failed`);
+    return;
+  }
+
+  const taskId = (form.get('task_id') ?? '').trim();
+  if (!/^[0-9a-fA-F-]{36}$/.test(taskId)) {
+    redirect(res, `${base}?m=notyours`);
+    return;
+  }
+
+  try {
+    if (action === 'close') {
+      const done = await withDeadline('owner.close', 15_000, () =>
+        ownerClose(sql, token, taskId),
+      );
+      redirect(res, `${base}?m=${done.ok ? 'done' : 'failed'}`);
+      return;
+    }
+    const undone = await withDeadline('owner.undo', 15_000, () => ownerUndo(sql, token, taskId));
+    redirect(res, `${base}?m=${undone.ok ? 'undone' : 'toolate'}`);
+  } catch (e) {
+    console.log(`[taskos] owner ${action} failed: ${e instanceof Error ? e.message : String(e)}`);
+    redirect(res, `${base}?m=failed`);
+  }
 }

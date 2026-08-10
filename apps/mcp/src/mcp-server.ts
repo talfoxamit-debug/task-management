@@ -15,7 +15,7 @@ import {
 import { getContext } from './context.js';
 import { dayPlan, setWorkHours } from './day-plan.js';
 import { commentOnTask, delegationInbox } from './delegate-inbox.js';
-import { delegateLink, listDelegationLinks, revokeDelegation } from './delegation.js';
+import { delegateLink, listDelegationLinks, ownerLink, revokeDelegation } from './delegation.js';
 import { getDayAllocation, nextActions, setDayAllocation } from './next-actions.js';
 import {
   createPerson,
@@ -948,6 +948,22 @@ export function buildServer(sql: Sql): McpServer {
       },
     },
     async (args) => guard(() => delegateLink(sql, args)),
+  );
+
+  server.registerTool(
+    'owner_link',
+    {
+      title: "Tal's own page",
+      description:
+        "Mint the link to Tal's OWN page — his day in hours, what is overdue, what is drafted and waiting, who is blocked. He has no other interface: the dashboard needs a login that has never worked, so without this the only way he can see his own portfolio is by asking you. THE WIDEST CREDENTIAL IN THE SYSTEM: anyone holding it reads everything. It can mark work done and undo that within 15 minutes, and nothing else. Shown exactly once. Give it to Tal and tell him to bookmark it.",
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false },
+      inputSchema: {
+        rotate: z.boolean().optional().describe('Replace the existing link; the old one works for grace_hours.'),
+        grace_hours: z.number().min(0).max(720).optional(),
+        label: z.string().optional(),
+      },
+    },
+    async (args) => guard(() => ownerLink(sql, args)),
   );
 
   server.registerTool(

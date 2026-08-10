@@ -134,6 +134,13 @@ describe('the agent instructions', () => {
     expect(INSTRUCTIONS).toContain('review_minutes');
   });
 
+  it('name the page Tal can actually look at', () => {
+    // The gap that made him say he did not have a task management system: every
+    // other interface talks TO him.
+    expect(INSTRUCTIONS).toContain('owner_link');
+    expect(INSTRUCTIONS).toContain('bookmark');
+  });
+
   it('stay short enough to survive a context window', () => {
     // Guidance nobody reads is guidance that does not exist. This is roughly
     // 1.5k tokens; well past that and it competes with the conversation.

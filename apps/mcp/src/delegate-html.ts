@@ -114,7 +114,19 @@ footer { margin-top:2.5rem; color:var(--dim); font-size:.8rem; border-top:1px so
 .empty { color:var(--dim); }
 `;
 
-function shell(title: string, body: string): string {
+/**
+ * The document, and the four headers that keep the token in it.
+ *
+ * Exported so the owner page shares exactly this shell rather than a copy of
+ * it: the referrer and robots rules are the whole reason a credential can live
+ * in a URL at all, and a second hand-maintained copy is a second place for one
+ * of them to go missing.
+ */
+export function shellFor(title: string, body: string, extraStyle = ''): string {
+  return shell(title, body, extraStyle);
+}
+
+function shell(title: string, body: string, extraStyle = ''): string {
   return `<!doctype html>
 <html lang="en">
 <head>
@@ -124,7 +136,7 @@ function shell(title: string, body: string): string {
 <meta name="referrer" content="no-referrer">
 <meta name="robots" content="noindex, nofollow, noarchive">
 <title>${esc(title)}</title>
-<style>${STYLE}</style>
+<style>${STYLE}${extraStyle}</style>
 </head>
 <body><div class="wrap">${body}</div></body>
 </html>
