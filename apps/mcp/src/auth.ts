@@ -18,12 +18,23 @@ import { timingSafeEqual } from 'node:crypto';
  *    browser history in a way headers do not. Rotate it by changing
  *    TASKOS_TOKEN and re-registering.
  *
- * 2. A 401 from here does NOT carry `WWW-Authenticate: Bearer`. That header is
- *    correct HTTP, but an MCP client reads it as an invitation to begin OAuth
- *    discovery: it fetches /.well-known/oauth-protected-resource, tries dynamic
- *    client registration, and fails with "Couldn't register with the sign-in
- *    service". This server intentionally implements no OAuth, so it must not
- *    advertise one.
+ * 2. A rejection from here carries NO `WWW-Authenticate` header AND answers 403
+ *    rather than 401. Both halves exist because of the same real failure.
+ *
+ *    Omitting the header was not enough. Re-adding the connector without the
+ *    `?token=` produced a 401, and the client treats ANY 401 as an invitation
+ *    to begin OAuth discovery regardless of headers: it probes
+ *    /.well-known/oauth-protected-resource, attempts dynamic client
+ *    registration, and shows "Couldn't register with Task-OS's sign-in
+ *    service" — an error naming a sign-in service that does not exist, about a
+ *    protocol this server does not speak, when the actual problem is a missing
+ *    query parameter.
+ *
+ *    403 is also the honest status. RFC 7235 reserves 401 for "authenticate and
+ *    try again", which presumes a scheme the client can satisfy. There is none:
+ *    the credential is a static pre-shared token that must be in the URL the
+ *    connector was registered with. Nothing the client can negotiate will help,
+ *    which is exactly what 403 means.
  */
 
 export type AuthResult = { ok: true } | { ok: false; status: number; message: string };
@@ -74,16 +85,20 @@ export function checkCredential(
   if (headerToken === null && urlToken === null) {
     return {
       ok: false,
-      status: 401,
+      status: 403,
       message:
-        'no token: send Authorization: Bearer <token>, or append ?token=<token> to the URL',
+        'no token. This server has no sign-in flow: the credential goes in the connector URL. Register it as https://<host>/api/mcp?token=<TASKOS_TOKEN>, or send Authorization: Bearer <token>.',
     };
   }
 
   const presented = headerToken ?? urlToken!;
   return constantTimeEquals(presented, expected)
     ? { ok: true }
-    : { ok: false, status: 401, message: 'invalid token' };
+    : {
+        ok: false,
+        status: 403,
+        message: 'invalid token: check the ?token= value on the connector URL against TASKOS_TOKEN',
+      };
 }
 
 /** Header-only check. Kept for callers that never see a URL. */

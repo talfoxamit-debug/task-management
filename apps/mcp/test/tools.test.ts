@@ -78,25 +78,26 @@ describe('seed data is what Part 8 specifies', () => {
   });
 
   it('has the three controllable milestones and no others', async () => {
-    const rows = await sql<Array<{ name: string; due_date: string; hardness: string }>>`
-      select name, due_date::text as due_date, hardness from milestones order by due_date`;
+    // Asserted as an OFFSET from today, never as a date. The seed used to carry
+    // literal 2026-08-08/10/12; the calendar walked past them and five tests in
+    // three files started failing on a day nobody touched the code.
+    const rows = await sql<Array<{ name: string; in_days: number; hardness: string }>>`
+      select name, (due_date - current_date)::int as in_days, hardness
+        from milestones order by due_date`;
     expect(rows).toEqual([
-      {
-        name: 'Site sale-ready: contract, pricing, pages',
-        due_date: '2026-08-08',
-        hardness: 'soft',
-      },
-      { name: 'YachtyHub live', due_date: '2026-08-10', hardness: 'hard' },
-      { name: 'Proposal delivered to warm lead', due_date: '2026-08-12', hardness: 'soft' },
+      { name: 'Site sale-ready: contract, pricing, pages', in_days: 6, hardness: 'soft' },
+      { name: 'YachtyHub live', in_days: 8, hardness: 'hard' },
+      { name: 'Proposal delivered to warm lead', in_days: 10, hardness: 'soft' },
     ]);
   });
 
   it('has the two outcome targets, linked to their milestones, and no tasks', async () => {
-    const outcomes = await sql<Array<{ name: string; target_date: string }>>`
-      select name, target_date::text as target_date from outcome_targets order by target_date`;
+    const outcomes = await sql<Array<{ name: string; in_days: number }>>`
+      select name, (target_date - current_date)::int as in_days
+        from outcome_targets order by target_date`;
     expect(outcomes).toEqual([
-      { name: 'First Stackwrk sale', target_date: '2026-08-15' },
-      { name: 'First Seatop sale', target_date: '2026-08-31' },
+      { name: 'First Stackwrk sale', in_days: 13 },
+      { name: 'First Seatop sale', in_days: 29 },
     ]);
     const links = await sql<Array<{ n: string }>>`select count(*)::text as n from outcome_milestones`;
     expect(Number(links[0]!.n)).toBe(2);

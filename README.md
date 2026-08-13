@@ -101,6 +101,15 @@ broken (D8).
 The server **fails closed**: if `TASKOS_TOKEN` is unset, every request is
 rejected with a 500. An unset secret never means "allow everyone".
 
+**The connector URL must carry `?token=`.** A rejection answers **403, not 401**,
+and sends no `WWW-Authenticate`. Both halves matter: an MCP client treats any 401
+as an invitation to begin OAuth discovery, and shows *"Couldn't register with
+Task-OS's sign-in service"* — an error naming a sign-in service that does not
+exist, about a protocol this server does not speak, when the real problem is a
+missing query parameter. 403 is also the honest status: the credential is a
+static pre-shared token in the URL, and nothing the client can negotiate will
+help, which is exactly what 403 means.
+
 ### 3. Vercel
 
 The function lives at the repository root, `api/mcp.ts`, and `vercel.json` sits

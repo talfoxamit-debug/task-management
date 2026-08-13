@@ -57,12 +57,19 @@ describe('the endpoint refuses unauthenticated callers', () => {
       headers: { 'content-type': 'application/json', accept: 'application/json, text/event-stream' },
       body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }),
     });
-    expect(res.status).toBe(401);
-    // Deliberately NO www-authenticate: it makes MCP clients start OAuth
-    // discovery, which this server does not implement.
+    // 403, NOT 401. Omitting www-authenticate was not enough: the client treats
+    // any 401 as an invitation to begin OAuth discovery, and showed Tal
+    // "Couldn't register with Task-OS's sign-in service" — an error about a
+    // protocol this server does not speak, when the real problem was a missing
+    // ?token= on the connector URL.
+    expect(res.status).toBe(403);
     expect(res.headers.get('www-authenticate')).toBeNull();
     const body = (await res.json()) as { error: { message: string } };
     expect(body.error.message).toContain('no token');
+    // The message has to name the actual fix, because it is the only place the
+    // fix is written down at the moment somebody needs it.
+    expect(body.error.message).toContain('?token=');
+    expect(body.error.message).toContain('no sign-in flow');
   });
 
   it('rejects a wrong token', async () => {
@@ -75,7 +82,8 @@ describe('the endpoint refuses unauthenticated callers', () => {
       },
       body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }),
     });
-    expect(res.status).toBe(401);
+    expect(res.status).toBe(403);
+    expect(res.headers.get('www-authenticate')).toBeNull();
   });
 
   it('accepts the token from the query string, for connectors with no header field', async () => {
@@ -95,7 +103,21 @@ describe('the endpoint refuses unauthenticated callers', () => {
       headers: { 'content-type': 'application/json', accept: 'application/json, text/event-stream' },
       body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }),
     });
-    expect(res.status).toBe(401);
+    expect(res.status).toBe(403);
+  });
+
+  it('never offers an OAuth flow it does not have', async () => {
+    // A client that finds any of these starts a registration it cannot finish.
+    const base = url.replace('/api/mcp', '');
+    for (const path of [
+      '/.well-known/oauth-protected-resource',
+      '/.well-known/oauth-authorization-server',
+      '/.well-known/openid-configuration',
+      '/register',
+    ]) {
+      const res = await fetch(`${base}${path}`);
+      expect(res.status).toBe(404);
+    }
   });
 
   it('routes only /api/mcp, and answers /health without a credential', async () => {

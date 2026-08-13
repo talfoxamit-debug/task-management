@@ -20,20 +20,32 @@ on conflict (slug) do update
       ceiling_share    = excluded.ceiling_share;
 
 -- Milestones: events Tal controls. These drive demand (D1).
+--
+-- DATES ARE RELATIVE TO WHEN THIS RUNS, not absolute, and that is a fix rather
+-- than a preference. They were hardcoded to 2026-08-08/10/12; the calendar
+-- walked past them and five tests in three files began failing on a day nobody
+-- touched the code. An expired milestone stops being active, its blocking tasks
+-- stop counting toward coverage, and assertions about slack quietly became
+-- assertions about the wall clock.
+--
+-- Fixing it here rather than in each test is what stops the next one appearing:
+-- a fresh database now always seeds a portfolio with a future in it. Production
+-- is unaffected — this insert is guarded by `not exists` and its rows landed
+-- long ago.
 insert into milestones (venture_id, name, due_date, hardness, cost_of_slip)
-select v.id, m.name, m.due_date::date, m.hardness, m.cost_of_slip
+select v.id, m.name, current_date + m.in_days, m.hardness, m.cost_of_slip
 from ventures v
 join (values
   ('yachtyhub', 'YachtyHub live',
-   '2026-08-10', 'hard',
+   8, 'hard',
    'high — launch window and the paid listings pipeline both slide with it'),
   ('stackwrk', 'Site sale-ready: contract, pricing, pages',
-   '2026-08-08', 'soft',
+   6, 'soft',
    'high — nothing can be sold until the site can take money'),
   ('seatop', 'Proposal delivered to warm lead',
-   '2026-08-12', 'soft',
+   10, 'soft',
    'medium — the lead cools and has to be re-warmed')
-) as m(slug, name, due_date, hardness, cost_of_slip) on m.slug = v.slug
+) as m(slug, name, in_days, hardness, cost_of_slip) on m.slug = v.slug
 where not exists (
   select 1 from milestones x where x.venture_id = v.id and x.name = m.name
 );
@@ -41,14 +53,14 @@ where not exists (
 -- Outcome targets: results other people decide. No critical path, no slack,
 -- never any demand (D1). Linked to the milestones believed to cause them.
 insert into outcome_targets (venture_id, name, target_date, indicator_config)
-select v.id, o.name, o.target_date::date, o.indicator_config::jsonb
+select v.id, o.name, current_date + o.in_days, o.indicator_config::jsonb
 from ventures v
 join (values
-  ('stackwrk', 'First Stackwrk sale', '2026-08-15',
+  ('stackwrk', 'First Stackwrk sale', 13,
    '{"indicators":["proposals_sent","demos_booked","follow_ups_open","pipeline_count"]}'),
-  ('seatop', 'First Seatop sale', '2026-08-31',
+  ('seatop', 'First Seatop sale', 29,
    '{"indicators":["proposals_sent","demos_booked","follow_ups_open","pipeline_count"]}')
-) as o(slug, name, target_date, indicator_config) on o.slug = v.slug
+) as o(slug, name, in_days, indicator_config) on o.slug = v.slug
 where not exists (
   select 1 from outcome_targets x where x.venture_id = v.id and x.name = o.name
 );
