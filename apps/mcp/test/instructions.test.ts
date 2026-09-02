@@ -29,6 +29,15 @@ describe('the agent instructions', () => {
     expect(INSTRUCTIONS).toMatch(/If Tal has not said how many hours/);
   });
 
+  it('tell a session not to "correct" a day that an engagement is overriding', () => {
+    // The failure this prevents: a session three days into a three-week relief
+    // reads a Tuesday that belongs to the wrong venture, decides the
+    // allocation is stale, and rewrites the WEEKLY shape -- which then stays
+    // wrong for good, long after the engagement has expired.
+    expect(INSTRUCTIONS).toContain('DO NOT CORRECT IT');
+    expect(INSTRUCTIONS).toContain('set_engagement');
+  });
+
   it('warn about batch size on commit_tasks', () => {
     // A 44-task commit failed in a way that could not be accounted for. Ten at
     // a time makes any failure isolable.

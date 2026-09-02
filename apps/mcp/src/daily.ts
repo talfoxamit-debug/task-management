@@ -1,5 +1,6 @@
 import { resolveWorkspaceId, type Sql } from './db.js';
 import { buildDayPlan } from './day-plan.js';
+import { resolveDayShape } from './day-shape.js';
 
 /**
  * The morning brief.
@@ -66,16 +67,15 @@ export async function buildDailyBrief(sql: Sql, date?: string): Promise<DailyBri
     : [{ dow: todayRows[0]!.dow }];
   const dow = dowRows[0]!.dow;
 
-  const allocation = await sql<
-    Array<{ slug: string | null; name: string | null; flex_minutes: number; is_working_day: boolean }>
-  >`
-    select v.slug, v.name, a.flex_minutes, a.is_working_day
-      from day_allocation a
-      left join ventures v on v.id = a.primary_venture_id
-     where a.workspace_id = ${workspaceId} and a.day_of_week = ${dow}`;
-  const day = allocation[0] ?? null;
+  const shape = await resolveDayShape(sql, workspaceId, today);
+  const day = {
+    slug: shape.primary_venture_slug,
+    name: shape.primary_venture_name,
+    flex_minutes: shape.flex_minutes,
+    is_working_day: shape.is_working_day,
+  };
 
-  if (day && !day.is_working_day) {
+  if (!day.is_working_day) {
     // Nothing is sent, rather than a message saying there is nothing to send.
     // A notification on a day off is a notification that trains you to ignore
     // the ones on the days that matter.
@@ -86,6 +86,13 @@ export async function buildDailyBrief(sql: Sql, date?: string): Promise<DailyBri
   const header = [`${DAYS[dow]} ${today}`];
   if (day?.name) header.push(day.name);
   lines.push(header.join(' · '));
+  if (shape.source === 'engagement' && shape.engagement) {
+    // The brief has to explain its own shape, or three weeks of unusual days
+    // read as a broken system rather than as the relief Tal is actually on.
+    lines.push(
+      `${shape.engagement.name} — ${shape.engagement.days_remaining} day(s) left, ends ${shape.engagement.end_date}`,
+    );
+  }
 
   // --- Due and overdue -----------------------------------------------------
   const due = await sql<

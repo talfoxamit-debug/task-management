@@ -58,6 +58,25 @@ export const EXPECTED_COLUMNS: Array<{
     feature: "Tal's own page (owner_link)",
     nullable: true,
   },
+  {
+    table: 'chat_pairing_codes',
+    column: 'code',
+    migration: '0016',
+    feature: 'pairing a worker to a Telegram chat',
+  },
+  { table: 'task_nudges', column: 'task_id', migration: '0016', feature: 'chasing quiet delegates' },
+  {
+    table: 'people',
+    column: 'telegram_paired_at',
+    migration: '0016',
+    feature: 'sending work to a worker in chat',
+  },
+  {
+    table: 'engagements',
+    column: 'id',
+    migration: '0017',
+    feature: 'date-range overrides of the weekly shape (set_engagement)',
+  },
 ];
 
 interface Snapshot {

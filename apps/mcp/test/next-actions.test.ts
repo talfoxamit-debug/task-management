@@ -32,10 +32,16 @@ beforeAll(async () => {
   seatop = v.find((x) => x.slug === 'seatop')!.id;
   yathub = v.find((x) => x.slug === 'yachtyhub')!.id;
 
+  // Relative, never absolute. An absolute future date rots into a past one and
+  // the milestone stops driving demand -- which is how these capacity
+  // assertions have broken three times before. See date-fixtures.test.ts.
+  const horizon = await sql<Array<{ d: string }>>`
+    select (current_date + 18)::text as d`;
+
   await setMilestone(sql, {
     venture: 'yachtyhub',
     name: 'Day 0',
-    due_date: '2026-08-20',
+    due_date: horizon[0]!.d,
     hardness: 'hard',
     cost_of_slip: 'critical — the pilot window cannot move',
     idempotency_key: 'na-m',

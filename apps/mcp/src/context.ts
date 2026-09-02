@@ -2,6 +2,7 @@ import { resolveWorkspaceId, loadSettings, today as todayFor, type Sql } from '.
 import { loadPortfolio } from './load.js';
 import { runCapacity, runEngine } from './pipeline.js';
 import { envelope, plainConfidence, r1, r3, type ToolEnvelope } from './narrow.js';
+import { resolveDayShape } from './day-shape.js';
 
 /**
  * The whole situation, in one call, at the start of a session.
@@ -119,6 +120,12 @@ export async function getContext(
      order by a.day_of_week`;
   const DAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
 
+  // The weekly table above is the standing shape. THIS is what today actually
+  // is, which can differ for weeks at a time -- a relief posting, a trip, a
+  // shutdown. Without it a session three days into an engagement reads the
+  // weekly row, decides the day looks wrong, and "corrects" it back.
+  const todayShape = await resolveDayShape(sql, workspaceId, today);
+
   // Everything the system genuinely does not know, said once, so the session
   // does not have to discover each gap by tripping over it.
   const unknown: string[] = [];
@@ -140,6 +147,11 @@ export async function getContext(
   if (dayRows.length === 0) {
     unknown.push(
       'which venture owns which day — set_day_allocation, or every day treats every venture equally',
+    );
+  }
+  if (todayShape.also_covering.length > 0) {
+    unknown.push(
+      `${todayShape.also_covering.length + 1} engagements cover today; the shortest was applied, but which one is really in force has not been resolved`,
     );
   }
   const bare = milestones.filter((m) => m.attached_tasks === 0);
@@ -185,6 +197,31 @@ export async function getContext(
               verdict: capacity.verdict,
               deficit: r1(capacity.deficitHours),
             }
+          : {}),
+      },
+      // What today IS, after any override. Named separately from the weekly
+      // table so the difference between "the standing shape" and "the shape in
+      // force right now" is visible rather than inferred.
+      today_shape: {
+        day: DAY_NAMES[todayShape.day_of_week],
+        primary_venture: todayShape.primary_venture_slug,
+        is_working_day: todayShape.is_working_day,
+        flex_minutes: todayShape.flex_minutes,
+        start_hour: todayShape.start_hour,
+        end_hour: todayShape.end_hour,
+        source: todayShape.source,
+        ...(todayShape.engagement
+          ? {
+              engagement: {
+                name: todayShape.engagement.name,
+                ends: todayShape.engagement.end_date,
+                days_remaining: todayShape.engagement.days_remaining,
+                note: todayShape.engagement.note,
+              },
+            }
+          : {}),
+        ...(todayShape.also_covering.length > 0
+          ? { also_covering: todayShape.also_covering }
           : {}),
       },
       day_allocation: dayRows.map((d) => ({

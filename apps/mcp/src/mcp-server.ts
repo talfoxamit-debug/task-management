@@ -14,6 +14,7 @@ import {
 } from './edit.js';
 import { getContext } from './context.js';
 import { dayPlan, setWorkHours } from './day-plan.js';
+import { endEngagement, listEngagements, setEngagement } from './day-shape.js';
 import { commentOnTask, delegationInbox } from './delegate-inbox.js';
 import { pairPersonChat, sendWorkToPerson } from './worker-chat.js';
 import { delegateLink, listDelegationLinks, ownerLink, revokeDelegation } from './delegation.js';
@@ -568,6 +569,66 @@ export function buildServer(sql: Sql): McpServer {
       inputSchema: {},
     },
     async (args) => guard(() => getDayAllocation(sql, args)),
+  );
+
+  server.registerTool(
+    'set_engagement',
+    {
+      title: 'A date range that overrides the weekly shape',
+      description:
+        'For a stretch of days that do not follow the normal week: a relief posting, a site trip, a shutdown, a holiday. Give the range and the venture that owns it, and every part of the system — day_plan, next_actions, the morning brief and get_context — reads that shape for those dates instead of the weekly allocation, then goes back to normal by itself on end_date + 1. Use is_working_day:false for time off, in which case no venture is needed. Overlapping ranges are allowed and all are reported; on a shared date the SHORTEST wins, so a one-day exception inside a three-week engagement takes precedence. This does NOT change how many hours exist in the week — say that separately if it also changed.',
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false },
+      inputSchema: {
+        name: z.string().describe('What it is, in Tal\'s words. Shown in the morning brief.'),
+        start_date: civilDate.describe('First day, inclusive.'),
+        end_date: civilDate.describe('Last day, inclusive.'),
+        venture: z
+          .string()
+          .optional()
+          .describe('Slug or name of the venture that owns these days. Required unless is_working_day is false.'),
+        is_working_day: z.boolean().optional().describe('Default true. False = not worked at all.'),
+        flex_minutes: z
+          .number()
+          .int()
+          .min(0)
+          .optional()
+          .describe('Omit to keep the weekly flex for those days.'),
+        start_hour: z.number().int().min(0).max(23).optional().describe('Omit to keep normal hours.'),
+        end_hour: z.number().int().min(1).max(24).optional(),
+        note: z.string().optional().describe('Why. A future session reading the gap needs this.'),
+        idempotency_key: z.string().optional(),
+      },
+    },
+    async (args) => guard(() => setEngagement(sql, args)),
+  );
+
+  server.registerTool(
+    'list_engagements',
+    {
+      title: 'Date-range overrides in effect or coming',
+      description:
+        'Current and future engagements, with which one is active today. Past and ended ones are excluded unless include_past is set.',
+      annotations: { readOnlyHint: true },
+      inputSchema: {
+        include_past: z.boolean().optional(),
+      },
+    },
+    async (args) => guard(() => listEngagements(sql, args)),
+  );
+
+  server.registerTool(
+    'end_engagement',
+    {
+      title: 'End a date-range override early, with a reason',
+      description:
+        'The engagement finished sooner than planned. The weekly shape applies again from today. This is not a delete: the reason a stretch of days looked unusual is exactly what a future session needs when it reads that history, so the row and the reason are kept.',
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true },
+      inputSchema: {
+        engagement_id: z.string().describe('From list_engagements.'),
+        reason: z.string().describe('Why it ended early.'),
+      },
+    },
+    async (args) => guard(() => endEngagement(sql, args)),
   );
 
   server.registerTool(

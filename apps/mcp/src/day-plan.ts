@@ -3,6 +3,7 @@ import { loadPortfolio } from './load.js';
 import { runEngine } from './pipeline.js';
 import { envelope, plainConfidence, type ToolEnvelope } from './narrow.js';
 import { hasColumn } from './schema.js';
+import { resolveDayShape } from './day-shape.js';
 
 /**
  * The day, laid into hours.
@@ -100,30 +101,24 @@ export async function buildDayPlan(
     };
   }
 
-  const cfg = await sql<
-    Array<{
-      primary_venture_id: string | null;
-      primary_name: string | null;
-      flex_minutes: number | null;
-      is_working_day: boolean | null;
-      day_start: number | null;
-      day_end: number | null;
-      set_start: number | null;
-      set_end: number | null;
-      buffer_ratio: string;
-      weekly: string | null;
-    }>
-  >`
-    select a.primary_venture_id, v.name as primary_name, a.flex_minutes, a.is_working_day,
-           a.start_hour as day_start, a.end_hour as day_end,
-           s.work_start_hour as set_start, s.work_end_hour as set_end,
-           s.buffer_ratio, s.default_weekly_hours as weekly
-      from settings s
-      left join day_allocation a
-        on a.workspace_id = s.workspace_id and a.day_of_week = ${dow}
-      left join ventures v on v.id = a.primary_venture_id
-     where s.workspace_id = ${workspaceId}`;
-  const c = cfg[0]!;
+  // The effective shape for THIS date, engagement overrides included.
+  const shape = await resolveDayShape(sql, workspaceId, date);
+
+  const cfg = await sql<Array<{ buffer_ratio: string; weekly: string | null }>>`
+    select buffer_ratio, default_weekly_hours as weekly
+      from settings where workspace_id = ${workspaceId}`;
+  const c = {
+    primary_venture_id: shape.primary_venture_id,
+    primary_name: shape.primary_venture_name,
+    flex_minutes: shape.flex_minutes,
+    is_working_day: shape.is_working_day,
+    day_start: shape.start_hour,
+    day_end: shape.end_hour,
+    set_start: null as number | null,
+    set_end: null as number | null,
+    buffer_ratio: cfg[0]!.buffer_ratio,
+    weekly: cfg[0]!.weekly,
+  };
 
   if (c.is_working_day === false) {
     return {
@@ -134,7 +129,11 @@ export async function buildDayPlan(
       slots: [],
       unplaced: [],
       to_prepare: [],
-      notes: [`${DAYS[dow]} is not a working day`],
+      notes: [
+        shape.engagement
+          ? `${DAYS[dow]} is not worked: ${shape.engagement.name}, until ${shape.engagement.end_date}`
+          : `${DAYS[dow]} is not a working day`,
+      ],
     };
   }
 
@@ -371,6 +370,16 @@ export async function buildDayPlan(
   if (chained > 0) {
     notes.push(
       `${chained} slot(s) are placed after work earlier in the same day that unblocks them — that ordering is the plan, not a suggestion`,
+    );
+  }
+  if (shape.source === 'engagement' && shape.engagement) {
+    notes.push(
+      `${shape.engagement.name} is in effect until ${shape.engagement.end_date} (${shape.engagement.days_remaining} day(s) left); the weekly allocation resumes by itself afterwards`,
+    );
+  }
+  if (shape.also_covering.length > 0) {
+    notes.push(
+      `${shape.also_covering.length} other engagement(s) also cover today (${shape.also_covering.join(', ')}); the shortest won`,
     );
   }
   notes.push(

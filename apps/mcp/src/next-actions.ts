@@ -2,6 +2,7 @@ import { resolveWorkspaceId, today as todayFor, type Sql } from './db.js';
 import { loadPortfolio } from './load.js';
 import { runEngine } from './pipeline.js';
 import { envelope, narrow, plainConfidence, r1, type ToolEnvelope } from './narrow.js';
+import { resolveDayShape } from './day-shape.js';
 
 /**
  * What to actually pick up, right now, in the slot that exists.
@@ -55,25 +56,21 @@ export async function nextActions(sql: Sql, input: NextActionsInput): Promise<To
     select extract(dow from ${today}::date)::int as d`;
   const dayOfWeek = dow[0]!.d;
 
-  const allocation = await sql<
-    Array<{
-      primary_venture_id: string | null;
-      primary_slug: string | null;
-      flex_minutes: number;
-      is_working_day: boolean;
-      note: string | null;
-    }>
-  >`
-    select a.primary_venture_id, v.slug as primary_slug, a.flex_minutes,
-           a.is_working_day, a.note
-      from day_allocation a
-      left join ventures v on v.id = a.primary_venture_id
-     where a.workspace_id = ${workspaceId} and a.day_of_week = ${dayOfWeek}`;
-  const day = allocation[0] ?? null;
+  // Through the resolver, never day_allocation directly: a dated engagement
+  // overrides the weekly shape, and four call sites reading the raw table is
+  // how the system ends up disagreeing with itself about what today is.
+  const shape = await resolveDayShape(sql, workspaceId, today);
+  const day = {
+    primary_venture_id: shape.primary_venture_id,
+    primary_slug: shape.primary_venture_slug,
+    flex_minutes: shape.flex_minutes,
+    is_working_day: shape.is_working_day,
+    note: shape.engagement ? shape.engagement.name : null,
+  };
 
   const notes: string[] = [];
 
-  if (day && !day.is_working_day && !input.ignore_day_allocation) {
+  if (!day.is_working_day && !input.ignore_day_allocation) {
     return envelope(
       plainConfidence([
         `${today} is not a working day${day.note ? `: ${day.note}` : ''}`,
@@ -242,6 +239,13 @@ export async function nextActions(sql: Sql, input: NextActionsInput): Promise<To
     };
   });
 
+  if (shape.source === 'engagement' && shape.engagement) {
+    // Without this a session mid-engagement sees an unfamiliar shape, assumes
+    // the allocation is wrong, and "corrects" it back.
+    notes.push(
+      `${shape.engagement.name} is in effect until ${shape.engagement.end_date} (${shape.engagement.days_remaining} day(s) left), which is why today belongs to ${shape.primary_venture_slug ?? 'no venture'}`,
+    );
+  }
   if (day?.primary_slug) {
     notes.push(
       `${today} is a ${day.primary_slug} day; ${r1(flexLeft / 60)}h of flex remains for other ventures`,

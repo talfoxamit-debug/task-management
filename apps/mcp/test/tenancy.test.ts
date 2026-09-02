@@ -37,7 +37,7 @@ beforeAll(async () => {
     values (${B}, 'Their Venture', 'yachtyhub', 1.0, 0.1, 0.5) returning id`;
   const m = await sql<Array<{ id: string }>>`
     insert into milestones (workspace_id, venture_id, name, due_date, hardness, cost_of_slip)
-    values (${B}, ${v[0]!.id}, 'Their milestone', '2026-09-01', 'hard', 'critical') returning id`;
+    values (${B}, ${v[0]!.id}, 'Their milestone', current_date + 30, 'hard', 'critical') returning id`;
   await sql`
     insert into tasks (workspace_id, venture_id, milestone_id, title, criticality,
                        context, estimate_minutes, value, status)

@@ -132,4 +132,12 @@ family becomes an opinion.
 
 | # | Family | Recurrence | Guard that would close it |
 |---|--------|------------|---------------------------|
-| _(empty — discover from this repo's own history; see the rule above)_ | | | |
+| 1 | **Absolute date in a fixture** — a test written with a hardcoded date that is in the future on the day it is written. Passes when written, passes in review, passes for months, then fails on an ordinary morning in a file nobody touched. | 4 known. `0003_seed.sql` (2026-08-08/10/12), patched twice before being fixed at source; `next-actions.test.ts:38` (`due_date: '2026-08-20'` → milestone in the past → required hours 0 → `expect(0).toBeGreaterThan(0.8)`); `tenancy.test.ts:40` (`'2026-09-01'`, identical failure, different file). | **Rung 2, shipped.** `apps/mcp/test/date-fixtures.test.ts`, ratcheted against `date-fixtures.baseline.json`: a new `YYYY-MM-DD` in a clean test file fails; the per-file count may only go down. 31 pre-existing literals remain in the baseline, to be converted to `current_date + N` as those files are touched. |
+
+### Family 1 — what the guard cannot see
+
+It counts literals; it does not know which of them the engine's answer depends
+on. A frozen historical date like `'2020-01-01'` (testing "this is in the past")
+is stable forever and is counted anyway, and a literal that is already in the
+past is stable but may already be *semantically* wrong. The baselined 31 are
+therefore not a clean bill of health — they are unexamined.
