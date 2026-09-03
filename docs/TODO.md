@@ -52,13 +52,22 @@ Say to Claude:
 
 The day shape has been wrong since 31 Aug. This corrects it and expires by itself on 21 Sep.
 
-### 3. Read `SUPABASE_URL` in Vercel — unblocks issue #1
+### 3. Redeploy, then read `/health` for storage — issue #1 is diagnosed
 
-Project `task-management-mcp-u4qh` → Settings → Environment Variables.
+**Diagnosed on 2026-09-03 and fixed in code.** `PGRST125` is a *PostgREST* error, so Storage
+was never reached: `SUPABASE_URL` almost certainly carries a `/rest/v1` suffix, which is the
+URL the Supabase dashboard shows for the REST API. The code now reduces it to the origin, so
+the value's shape can no longer break uploads.
 
-**Read it before changing it.** It is the most likely cause of the `attach_document` 404,
-and guessing has cost this project more time than anything else. An env change does nothing
-until the project is redeployed.
+Nothing to change by hand. After the next deploy:
+
+```bash
+curl -s https://task-management-mcp-u4qh.vercel.app/health
+```
+
+- `"storage":{"configured":true,"bucketReachable":true}` → documents work.
+- `problem` mentions the bucket → create `taskos-documents` in Supabase → Storage.
+- anything else → the `problem` string names it.
 
 ### 4. Set a `TASKOS_TOKEN` you chose
 
@@ -93,7 +102,7 @@ Ordered. The order is not arbitrary — see the notes.
 
 | # | Issue | Why here |
 |---|---|---|
-| 1 | [#1 `attach_document` 404s](https://github.com/talfoxamit-debug/task-management/issues/1) | Likely a **settings fix, not a code fix**. Gates receipts, and therefore #5. Cheapest thing on the list if item 3 above confirms it |
+| ✅ | [#1 `attach_document` 404s](https://github.com/talfoxamit-debug/task-management/issues/1) | **Diagnosed and fixed 2026-09-03.** Awaiting a deploy to confirm against production. Unblocks step 3 of #5 |
 | 2 | [#2 recurring completion history](https://github.com/talfoxamit-debug/task-management/issues/2) | **Has a date on it.** The 20 Sep handover deliverable *is* the maintenance log, and the history does not exist to draft it from |
 | 3 | [#6 owner Telegram chat](https://github.com/talfoxamit-debug/task-management/issues/6) | The scheduler half is already live. Pairs with #2: a recurring item can currently neither notify nor record |
 | 4 | [#3 contacts who are not delegates](https://github.com/talfoxamit-debug/task-management/issues/3) | Four such people appeared in two days and all live in free-text notes |
@@ -145,6 +154,26 @@ falsifying the one that is arithmetically correct.
 
 **The quality system** (`docs/QUALITY_SYSTEM.md`). Fix the class, not the instance. A fix is
 not done until something automatic would catch the next one.
+
+**`SUPABASE_URL` is reduced to its origin** (`storage.ts`). The document store was unusable
+for three days because the value carried a `/rest/v1` suffix, so every Storage call landed
+on PostgREST and returned `PGRST125` — an error naming a component nobody was using. A
+project URL never has a meaningful path, so taking the origin repairs every wrong value
+instead of enumerating the wrong suffixes seen so far.
+
+## The suggestion list, tidied
+
+Six of eleven open suggestions were already built. Four are now marked `done` with the
+commit that closed them — `next_actions`, `day_allocation`, `get_context`, engagements.
+
+Two are **partial and deliberately left open** for Tal to decide:
+
+- `f8aa9981` *required_hours_per_week inflates* — the reported half shipped
+  (`required_hours_total`, `horizon_days`, `deficit_hours_total`, `hours_freed_total`). The
+  requested **cap at usable was declined twice**, because capping drives the deficit to zero
+  during a fire.
+- `264543c7` *no scheduler and no owner chat* — the scheduler shipped as the morning brief.
+  The owner chat has not been built; it is issue #6.
 
 ---
 
