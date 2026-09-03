@@ -173,6 +173,19 @@ export default async function server(
                 }
               : 'unknown',
             cronSecretConfigured: Boolean(process.env['CRON_SECRET']),
+            // Configured-or-not read as healthy while attach_document was
+            // 404ing, because a present-but-wrong SUPABASE_URL is present.
+            // This asks the bucket instead of assuming it.
+            storage: await (async () => {
+              const { storageDiagnosis } = await import('./storage.js');
+              const d = await storageDiagnosis().catch(() => null);
+              if (!d) return 'unknown';
+              return {
+                configured: d.configured,
+                bucketReachable: d.bucketReachable,
+                ...(d.problem ? { problem: d.problem } : {}),
+              };
+            })(),
             ...(drift.ok
               ? {}
               : {

@@ -1,7 +1,7 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { Sql } from '../src/db.js';
 import { attachDocument, createUploadLink, getDocument, listDocuments } from '../src/documents.js';
-import { safeFilename } from '../src/storage.js';
+import { normaliseProjectUrl, safeFilename, storageConfig } from '../src/storage.js';
 import { freshDb, type TestDb } from './harness.js';
 
 /**
@@ -356,5 +356,70 @@ describe('safeFilename', () => {
 
   it('keeps a readable name for ordinary files', () => {
     expect(safeFilename('Q3 Report v2.pdf')).toBe('Q3-Report-v2.pdf');
+  });
+});
+
+describe('SUPABASE_URL that is not the project origin', () => {
+  /**
+   * THE REGRESSION TEST FOR THE PGRST125 404.
+   *
+   * attach_document failed with `{"code":"PGRST125","message":"Invalid path
+   * specified in request URL"}`. PGRST125 is PostgREST -- Storage was never
+   * reached at all, which is why the error named a component nobody was using
+   * and read as unfixable. The Supabase dashboard shows a URL for the REST API
+   * ending in `/rest/v1`; pasted into SUPABASE_URL, every Storage call becomes
+   * `https://<ref>.supabase.co/rest/v1/storage/v1/object/...`.
+   */
+  const CASES: Array<[string, string | null]> = [
+    ['https://abc.supabase.co', null],
+    ['https://abc.supabase.co/', null],
+    ['https://abc.supabase.co///', null],
+    // The one that actually happened.
+    ['https://abc.supabase.co/rest/v1', '/rest/v1'],
+    ['https://abc.supabase.co/rest/v1/', '/rest/v1'],
+    // The siblings, which a trim of only the known suffix would have missed.
+    ['https://abc.supabase.co/storage/v1', '/storage/v1'],
+    ['https://abc.supabase.co/auth/v1', '/auth/v1'],
+    ['  https://abc.supabase.co/rest/v1  ', '/rest/v1'],
+  ];
+
+  for (const [input, trimmed] of CASES) {
+    it(`reduces ${JSON.stringify(input)} to the origin`, () => {
+      const out = normaliseProjectUrl(input);
+      expect(out.url).toBe('https://abc.supabase.co');
+      expect(out.trimmed).toBe(trimmed);
+    });
+  }
+
+  it('builds a Storage path, not a PostgREST one, from the broken value', () => {
+    // The assertion that would have caught the outage: the request URL.
+    const { url } = normaliseProjectUrl('https://abc.supabase.co/rest/v1');
+    expect(`${url}/storage/v1/object/taskos-documents/x.md`).toBe(
+      'https://abc.supabase.co/storage/v1/object/taskos-documents/x.md',
+    );
+  });
+
+  it('takes the origin in the real config path too, not only in the helper', () => {
+    const prevUrl = process.env['SUPABASE_URL'];
+    const prevKey = process.env['SUPABASE_SERVICE_ROLE_KEY'];
+    process.env['SUPABASE_URL'] = 'https://abc.supabase.co/rest/v1';
+    process.env['SUPABASE_SERVICE_ROLE_KEY'] = 'service-key';
+    try {
+      const status = storageConfig();
+      expect(status.configured).toBe(true);
+      if (status.configured) expect(status.config.url).toBe('https://abc.supabase.co');
+    } finally {
+      if (prevUrl === undefined) delete process.env['SUPABASE_URL'];
+      else process.env['SUPABASE_URL'] = prevUrl;
+      if (prevKey === undefined) delete process.env['SUPABASE_SERVICE_ROLE_KEY'];
+      else process.env['SUPABASE_SERVICE_ROLE_KEY'] = prevKey;
+    }
+  });
+
+  it('leaves a value that is not a URL alone, rather than throwing', () => {
+    // A helper that throws here would turn a bad setting into a 500 on a path
+    // that is supposed to degrade.
+    expect(normaliseProjectUrl('not a url').url).toBe('not a url');
+    expect(normaliseProjectUrl('not a url').trimmed).toBeNull();
   });
 });

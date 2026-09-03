@@ -33,6 +33,44 @@ export type StorageStatus =
   | { configured: true; config: StorageConfig }
   | { configured: false; reason: string };
 
+/**
+ * Reduce a Supabase project URL to its ORIGIN.
+ *
+ * THIS IS THE FIX FOR A 404 THAT COST A DOCUMENT STORE. `attach_document`
+ * returned `{"code":"PGRST125","message":"Invalid path specified in request
+ * URL"}` -- and PGRST125 is PostgREST, not Storage. Storage was never reached.
+ *
+ * The Supabase dashboard shows several URLs, and the one labelled for the REST
+ * API ends in `/rest/v1`. Paste that into SUPABASE_URL and every call here
+ * becomes `https://<ref>.supabase.co/rest/v1/storage/v1/object/...`, which
+ * PostgREST answers, correctly, with "invalid path". The error names a
+ * component nobody was trying to use, which is why it reads as unfixable.
+ *
+ * A project URL never has a meaningful path, so taking the origin is safe for
+ * every correct value and repairs every incorrect one. Trimming only the exact
+ * suffixes we have seen would be an enumeration -- correct today, silently
+ * incomplete the first time somebody pastes `/auth/v1` instead.
+ *
+ * The trim is REPORTED rather than silent (see `storageDiagnosis`), because a
+ * setting that is wrong and works anyway is a setting that stays wrong.
+ */
+export function normaliseProjectUrl(raw: string): { url: string; trimmed: string | null } {
+  const cleaned = raw.trim().replace(/\/+$/, '');
+  let parsed: URL;
+  try {
+    parsed = new URL(cleaned);
+  } catch {
+    // Not a URL at all. Hand it back untouched so the caller reports the real
+    // value shape rather than a parse failure from inside a helper.
+    return { url: cleaned, trimmed: null };
+  }
+  const path = parsed.pathname.replace(/\/+$/, '');
+  return {
+    url: parsed.origin,
+    trimmed: path === '' || path === '/' ? null : path,
+  };
+}
+
 export function storageConfig(): StorageStatus {
   const url = process.env['SUPABASE_URL'] ?? process.env['NEXT_PUBLIC_SUPABASE_URL'];
   const serviceKey = process.env['SUPABASE_SERVICE_ROLE_KEY'];
@@ -47,7 +85,61 @@ export function storageConfig(): StorageStatus {
       } unset on the server. Metadata still works; bytes cannot move until this is set.`,
     };
   }
-  return { configured: true, config: { url: url.replace(/\/+$/, ''), serviceKey } };
+  return { configured: true, config: { url: normaliseProjectUrl(url).url, serviceKey } };
+}
+
+export interface StorageDiagnosis {
+  configured: boolean;
+  /** What is wrong, or null when nothing is. Never contains the URL itself. */
+  problem: string | null;
+  /** A path that was trimmed off SUPABASE_URL. Names the misconfiguration. */
+  trimmedPath: string | null;
+  /** Whether the bucket answered. null when not probed. */
+  bucketReachable: boolean | null;
+}
+
+/**
+ * Say whether bytes can actually move, by asking rather than by assuming.
+ *
+ * `/health` reported storage as configured-or-not and nothing else, so a
+ * present-but-wrong SUPABASE_URL read as healthy right up until an upload
+ * failed. An empty result is not a clean result: this makes one real request.
+ *
+ * It reports the SHAPE of the configuration and never its value -- no
+ * hostnames, no keys -- for the same reason the rest of /health does not.
+ */
+export async function storageDiagnosis(): Promise<StorageDiagnosis> {
+  const raw = process.env['SUPABASE_URL'] ?? process.env['NEXT_PUBLIC_SUPABASE_URL'];
+  const status = storageConfig();
+  const trimmed = raw ? normaliseProjectUrl(raw).trimmed : null;
+
+  if (!status.configured) {
+    return { configured: false, problem: status.reason, trimmedPath: trimmed, bucketReachable: null };
+  }
+
+  let reachable = false;
+  let problem: string | null = null;
+  try {
+    const res = await call(status.config, `/bucket/${BUCKET}`, { timeoutMs: 8_000 });
+    reachable = res.ok;
+    if (!res.ok) {
+      const body = await res.text().catch(() => '');
+      problem =
+        res.status === 404 && body.includes('PGRST')
+          ? `SUPABASE_URL points at PostgREST, not the project root: the request reached the database API instead of Storage. It must be the project origin (https://<ref>.supabase.co) with no path.`
+          : res.status === 404
+            ? `the bucket "${BUCKET}" does not exist in this project — create it, or documents have nowhere to go`
+            : `Storage answered ${res.status} ${res.statusText}`;
+    }
+  } catch (e) {
+    problem = `Storage did not answer: ${e instanceof Error ? e.message : 'unknown error'}`;
+  }
+
+  if (!problem && trimmed) {
+    problem = `SUPABASE_URL has "${trimmed}" on the end and is being trimmed to the origin. Uploads work, but fix the value — the next thing to read it may not trim.`;
+  }
+
+  return { configured: true, problem, trimmedPath: trimmed, bucketReachable: reachable };
 }
 
 async function call(
